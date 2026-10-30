@@ -218,3 +218,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# DrivePriority AI datasets
+/data/
+
+# Local trained models and experiment artifacts
+/models/
+/results/
+
+# Local secrets
+.env
+.env.*
+
+# Python virtual environment
+.venv/
