@@ -7,7 +7,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import subprocess
 from typing import Any, Iterable, Mapping
@@ -173,22 +173,69 @@ def output_inventory(root: Path, *, excluded_names: set[str] | None = None) -> l
     return inventory
 
 
-def verify_inventory(root: Path, inventory: Iterable[Mapping[str, Any]]) -> list[str]:
+def verify_inventory(
+    root: Path,
+    inventory: Iterable[Mapping[str, Any]],
+    *,
+    excluded_names: set[str] | None = None,
+    required_paths: set[str] | None = None,
+) -> list[str]:
     errors: list[str] = []
     resolved_root = root.resolve()
-    for entry in inventory:
-        relative = str(entry["path"])
+    entries = list(inventory)
+    if not entries:
+        errors.append("Output inventory is missing or empty")
+    listed_paths: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            errors.append("Malformed output inventory entry")
+            continue
+        try:
+            relative = str(entry["path"])
+        except KeyError:
+            errors.append("Output inventory entry has no path")
+            continue
+        parsed = PurePosixPath(relative)
+        if (
+            not relative
+            or parsed.is_absolute()
+            or "\\" in relative
+            or any(part in {"", ".", ".."} for part in parsed.parts)
+            or parsed.as_posix() != relative
+        ):
+            errors.append(f"Unsafe manifest path: {relative}")
+            continue
+        if relative in listed_paths:
+            errors.append(f"Duplicate manifest path: {relative}")
+            continue
+        listed_paths.add(relative)
         candidate = (root / relative).resolve()
-        if resolved_root not in candidate.parents:
+        if candidate == resolved_root or resolved_root not in candidate.parents:
             errors.append(f"Unsafe manifest path: {relative}")
             continue
         if not candidate.is_file():
             errors.append(f"Missing output file: {relative}")
             continue
+        try:
+            expected_bytes = int(entry["bytes"])
+            expected_sha256 = str(entry["sha256"])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"Invalid manifest metadata for {relative}")
+            continue
         actual_size = candidate.stat().st_size
-        if actual_size != int(entry["bytes"]):
+        if actual_size != expected_bytes:
             errors.append(f"Size mismatch for {relative}")
             continue
-        if sha256_file(candidate) != entry["sha256"]:
+        if sha256_file(candidate) != expected_sha256:
             errors.append(f"SHA-256 mismatch for {relative}")
+    actual_paths = {
+        str(entry["path"])
+        for entry in output_inventory(root, excluded_names=excluded_names)
+    }
+    for missing in sorted(actual_paths - listed_paths):
+        errors.append(f"Unlisted output artifact: {missing}")
+    for unexpected in sorted(listed_paths - actual_paths):
+        errors.append(f"Manifest lists non-output artifact: {unexpected}")
+    for required in sorted((required_paths or set()) - listed_paths):
+        errors.append(f"Required output artifact is not inventoried: {required}")
     return errors

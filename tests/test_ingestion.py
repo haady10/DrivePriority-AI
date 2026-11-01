@@ -2291,3 +2291,139 @@ def test_completed_output_reuse_rejects_schema_contract_fingerprint_mismatch(
             output=output,
             source_url=SOURCE_URL,
         )
+
+
+def test_publication_cleanup_interruption_resumes_without_run_state(tmp_path: Path) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "cleanup-interruption-output"
+    with pytest.raises(IngestionInterrupted, match="run_state.json"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_publication_after_cleanup="run_state.json",
+        )
+
+    staging = tmp_path / "cleanup-interruption-output.staging"
+    assert not (staging / "run_state.json").exists()
+    assert (staging / "publication_ready.json").is_file()
+    assert not output.exists()
+
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        resume=True,
+    )
+    assert result["status"] == "complete"
+    assert (output / "publication_ready.json").is_file()
+
+
+def test_publication_rename_failure_is_recoverable(tmp_path: Path, monkeypatch) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = (tmp_path / "rename-failure-output").resolve()
+    staging = output.with_name(output.name + ".staging")
+    real_replace = __import__("os").replace
+    failed = False
+
+    def fail_publication_rename(source, destination):
+        nonlocal failed
+        if Path(source).resolve() == staging and Path(destination).resolve() == output and not failed:
+            failed = True
+            raise OSError("synthetic publication rename failure")
+        return real_replace(source, destination)
+
+    with monkeypatch.context() as context:
+        context.setattr("drivepriority.data.ingest.os.replace", fail_publication_rename)
+        with pytest.raises(OSError, match="synthetic publication rename failure"):
+            run_ingestion(
+                config_path=config,
+                quarter="2016Q1",
+                archive=archive,
+                output=output,
+                source_url=SOURCE_URL,
+            )
+
+    assert staging.is_dir()
+    assert (staging / "publication_ready.json").is_file()
+    assert not (staging / "run_state.json").exists()
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        resume=True,
+    )
+    assert result["status"] == "complete"
+
+
+def test_checkpoint_rejects_omitted_exception_artifact_before_cleanup(tmp_path: Path) -> None:
+    archive, config, output, staging = interrupted_checkpoint(tmp_path)
+    files = checkpoint_files(staging)
+    exception_paths = [
+        path for path in files["relative_paths"] if path.startswith("exception_parts/")
+    ]
+    assert exception_paths
+    omitted = exception_paths[0]
+    files["relative_paths"] = [path for path in files["relative_paths"] if path != omitted]
+    files["artifacts"] = [
+        artifact for artifact in files["artifacts"] if artifact["path"] != omitted
+    ]
+    replace_checkpoint_files(staging, files)
+
+    with pytest.raises(PipelineError, match="exception checkpoint count mismatch"):
+        resume_checkpoint(archive, config, output)
+    assert (staging / omitted).is_file()
+
+
+def test_checkpoint_rejects_inconsistent_exception_evidence_summary(tmp_path: Path) -> None:
+    archive, config, output, staging = interrupted_checkpoint(tmp_path)
+    files = checkpoint_files(staging)
+    files["evidence_summary"]["exception_rows"] += 1
+    replace_checkpoint_files(staging, files)
+
+    with pytest.raises(PipelineError, match="evidence summary mismatch"):
+        resume_checkpoint(archive, config, output)
+
+
+@pytest.mark.parametrize("mutation", ["empty_inventory", "missing_quality", "unlisted_file"])
+def test_completed_output_requires_exhaustive_manifest_inventory(
+    tmp_path: Path, mutation: str
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / f"manifest-{mutation}"
+    run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+    manifest_path = output / "source_manifest.json"
+    manifest = read_json(manifest_path)
+    if mutation == "empty_inventory":
+        manifest["outputs"] = []
+    elif mutation == "missing_quality":
+        manifest["outputs"] = [
+            entry for entry in manifest["outputs"] if entry["path"] != "quality_report.json"
+        ]
+    else:
+        (output / "unexpected.parquet").write_bytes(b"not a real artifact")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(PipelineError, match="Existing output verification failed"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )

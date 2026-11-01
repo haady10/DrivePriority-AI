@@ -94,6 +94,7 @@ Before staging, the pipeline validates batch and Parquet row-group sizes, the se
 ├── schema_report.json
 ├── quality_report.json
 ├── validation_results.json
+├── publication_ready.json    # durable completed-publication recovery marker
 └── exceptions.parquet        # present only when exceptions exist
 ```
 
@@ -210,13 +211,15 @@ Resume only with the same archive SHA-256, source URL, quarter, schema version, 
     --resume
 ```
 
-Completed member transactions are reused only after every recorded Parquet artifact path, byte size, SHA-256, row count, and schema fingerprint is verified. This includes exception parts using the linked row-evidence schema. A missing, modified, or inconsistent checkpoint stops recovery and requires an explicit `--restart`; checkpoint metadata is never recalculated to certify a damaged file. Incomplete member files are removed only from the verified matching staging boundary and that member is replayed from its source stream.
+Completed member transactions are reused only after every recorded Parquet artifact path, byte size, SHA-256, row count, and schema fingerprint is verified. This includes exception parts using the linked row-evidence schema. Checkpoint verification also independently reads the listed parts and reconciles canonical rows, exception-code counts, quarantined source-record evidence, field issues, stable evidence links, and exactly one complete raw-row copy per evidence identifier against the member statistics. A missing, omitted, modified, or inconsistent checkpoint stops recovery before incomplete-file cleanup and requires an explicit `--restart`; checkpoint metadata is never recalculated to certify damaged evidence. These local cross-checks detect accidental damage and inconsistent metadata, but do not claim cryptographic authenticity against an actor able to rewrite every local checkpoint record.
+
+After the complete manifest is written, `publication_ready.json` binds its SHA-256 and recovery identity. This marker remains valid through runtime cleanup and the atomic staging rename, so an interruption after `run_state.json` deletion or a rename failure can be safely resumed without reprocessing or touching unrelated files.
 
 Use `--restart` only when intentionally discarding a verified matching staging run. Restart refuses staging state belonging to any other archive, URL, quarter, or configuration. It never deletes an existing completed output.
 
 ## Safe reruns
 
-If the final output already exists, the pipeline verifies its identity and every manifest-recorded file size and SHA-256. A matching completed submission returns `verified_existing` without rewriting it. Any mismatch stops with an error.
+If the final output already exists, the pipeline verifies its identity, manifest version, publication marker, required artifact set, unique safe paths, exact output membership, and every recorded file size and SHA-256. It also reconciles the schema contract across Parquet, schema report, validation report, and manifest. A matching completed submission returns `verified_existing` without rewriting it. Missing, unlisted, duplicate, unexpected, or inconsistent artifacts stop verification.
 
 Publish a new immutable output directory for a changed archive, configuration, or pipeline revision. Do not overwrite a teammate's submission.
 

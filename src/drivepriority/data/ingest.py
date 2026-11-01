@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -67,6 +68,8 @@ FINAL_REPORT_NAMES = {
     "validation_results.json",
     "exceptions.parquet",
 }
+MANIFEST_VERSION = "1.1.0"
+PUBLICATION_MARKER = "publication_ready.json"
 RUNTIME_NAMES = {
     "run_state.json",
     "state.duckdb",
@@ -578,6 +581,33 @@ def _validate_state(staging: Path, identity: Mapping[str, Any]) -> dict[str, Any
     return state
 
 
+def _validate_publication_marker(
+    staging: Path, identity: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    marker_path = staging / PUBLICATION_MARKER
+    manifest_path = staging / "source_manifest.json"
+    if not marker_path.is_file() or not manifest_path.is_file():
+        raise PipelineError(
+            "Staging has neither processing state nor a verifiable publication marker"
+        )
+    marker = read_json(marker_path)
+    manifest = read_json(manifest_path)
+    if (
+        marker.get("marker_version") != "1.0.0"
+        or marker.get("identity") != dict(identity)
+        or manifest.get("identity") != dict(identity)
+        or manifest.get("status") != "complete"
+        or marker.get("manifest_sha256") != sha256_file(manifest_path)
+    ):
+        raise PipelineError("Completed staging publication marker is invalid")
+    state = {
+        "identity": dict(identity),
+        "started_at": manifest.get("processing", {}).get("started_at"),
+        "status": "publication_ready",
+    }
+    return state, manifest
+
+
 def _safe_remove_tree(path: Path, boundary: Path) -> None:
     resolved = path.resolve()
     resolved_boundary = boundary.resolve()
@@ -598,7 +628,10 @@ def _prepare_staging(
     if output.exists():
         return {}, False
     if staging.exists():
-        state = _validate_state(staging, identity)
+        if (staging / "run_state.json").is_file():
+            state = _validate_state(staging, identity)
+        else:
+            state, _manifest = _validate_publication_marker(staging, identity)
         if restart:
             _safe_remove_tree(staging, staging.parent)
         elif not resume:
@@ -616,6 +649,22 @@ def _prepare_staging(
     state = {"identity": dict(identity), "started_at": utc_now(), "status": "processing"}
     write_json_atomic(staging / "run_state.json", state)
     return state, False
+
+
+def _write_publication_marker(
+    staging: Path, identity: Mapping[str, Any]
+) -> None:
+    manifest_path = staging / "source_manifest.json"
+    write_json_atomic(
+        staging / PUBLICATION_MARKER,
+        {
+            "marker_version": "1.0.0",
+            "status": "publication_ready",
+            "identity": dict(identity),
+            "manifest_sha256": sha256_file(manifest_path),
+            "recorded_at": utc_now(),
+        },
+    )
 
 
 def _arrow_schema_fingerprint(schema: pa.Schema) -> str:
@@ -742,6 +791,65 @@ def _verify_published_schema_contract(
     return errors
 
 
+def _verify_completed_manifest(
+    root: Path, manifest: Mapping[str, Any], identity: Mapping[str, Any]
+) -> list[str]:
+    errors: list[str] = []
+    if manifest.get("manifest_version") != MANIFEST_VERSION:
+        errors.append("unsupported or missing manifest version")
+    if manifest.get("status") != "complete":
+        errors.append("manifest status is not complete")
+    if manifest.get("identity") != dict(identity):
+        errors.append("manifest identity mismatch")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list):
+        return [*errors, "manifest outputs must be a nonempty list"]
+    required_paths = {
+        "schema_report.json",
+        "quality_report.json",
+        "validation_results.json",
+    }
+    data_paths = {
+        str(entry.get("path"))
+        for entry in outputs
+        if isinstance(entry, Mapping)
+        and str(entry.get("path", "")).startswith("data/")
+        and str(entry.get("path", "")).endswith(".parquet")
+    }
+    if not data_paths:
+        errors.append("manifest inventories no canonical Parquet data")
+    required_paths.update(data_paths)
+    exception_rows = manifest.get("processing", {}).get("exception_rows")
+    if isinstance(exception_rows, bool) or not isinstance(exception_rows, int):
+        errors.append("manifest processing.exception_rows is invalid")
+    elif exception_rows > 0:
+        required_paths.add("exceptions.parquet")
+    elif any(
+        isinstance(entry, Mapping) and entry.get("path") == "exceptions.parquet"
+        for entry in outputs
+    ):
+        errors.append("manifest inventories exceptions.parquet with zero exception rows")
+    errors.extend(
+        verify_inventory(
+            root,
+            outputs,
+            excluded_names=RUNTIME_NAMES
+            | {"source_manifest.json", PUBLICATION_MARKER},
+            required_paths=required_paths,
+        )
+    )
+    errors.extend(
+        _verify_published_schema_contract(root, manifest.get("schema_contract"))
+    )
+    try:
+        _state, marker_manifest = _validate_publication_marker(root, identity)
+        if marker_manifest != dict(manifest):
+            errors.append("publication marker manifest content mismatch")
+    except (PipelineError, OSError, ValueError, json.JSONDecodeError) as exc:
+        errors.append(f"publication marker verification failed: {exc}")
+    return errors
+
+
 def _verify_existing_output(output: Path, identity: Mapping[str, Any]) -> dict[str, Any]:
     manifest_path = output / "source_manifest.json"
     if not manifest_path.is_file():
@@ -752,10 +860,7 @@ def _verify_existing_output(output: Path, identity: Mapping[str, Any]) -> dict[s
             "Existing output does not match this archive, quarter, URL, configuration, "
             "and pipeline identity"
         )
-    errors = verify_inventory(output, manifest.get("outputs", []))
-    errors.extend(
-        _verify_published_schema_contract(output, manifest.get("schema_contract"))
-    )
+    errors = _verify_completed_manifest(output, manifest, identity)
     if errors:
         raise PipelineError("Existing output verification failed: " + "; ".join(errors))
     return {"status": "verified_existing", "output": str(output), "manifest": manifest}
@@ -785,12 +890,72 @@ def _checkpoint_artifacts(staging: Path, relative_paths: Sequence[str]) -> list[
     return artifacts
 
 
+def _checkpoint_evidence_summary(
+    staging: Path, relative_paths: Sequence[str]
+) -> dict[str, Any]:
+    data_rows = 0
+    exception_rows = 0
+    issue_codes: Counter[str] = Counter()
+    quarantined_evidence_ids: set[str] = set()
+    all_evidence_ids: set[str] = set()
+    raw_copy_counts: Counter[str] = Counter()
+    missing_evidence_links = 0
+    field_issue_rows = 0
+    for relative in sorted(relative_paths):
+        path = staging / relative
+        parquet_file = pq.ParquetFile(path)
+        if relative.startswith("data/"):
+            data_rows += parquet_file.metadata.num_rows
+            continue
+        if not relative.startswith("exception_parts/"):
+            continue
+        for batch in parquet_file.iter_batches(
+            batch_size=8192,
+            columns=[
+                "exception_code",
+                "row_disposition",
+                "row_evidence_id",
+                "raw_record_json",
+                "column_name",
+            ],
+        ):
+            for row in batch.to_pylist():
+                exception_rows += 1
+                issue_codes[str(row["exception_code"])] += 1
+                evidence_id = row.get("row_evidence_id")
+                if not evidence_id:
+                    missing_evidence_links += 1
+                    continue
+                all_evidence_ids.add(str(evidence_id))
+                if row.get("row_disposition") == "quarantined":
+                    quarantined_evidence_ids.add(str(evidence_id))
+                if row.get("raw_record_json") is not None:
+                    raw_copy_counts[str(evidence_id)] += 1
+                if row.get("column_name") is not None:
+                    field_issue_rows += 1
+    duplicate_or_missing_raw_evidence = sum(
+        raw_copy_counts.get(evidence_id, 0) != 1
+        for evidence_id in all_evidence_ids
+    )
+    return {
+        "data_rows": data_rows,
+        "exception_rows": exception_rows,
+        "issue_code_counts": dict(sorted(issue_codes.items())),
+        "quarantined_evidence_records": len(quarantined_evidence_ids),
+        "linked_evidence_records": len(all_evidence_ids),
+        "missing_evidence_links": missing_evidence_links,
+        "raw_evidence_copy_violations": duplicate_or_missing_raw_evidence,
+        "field_issue_rows": field_issue_rows,
+    }
+
+
 def _verify_completed_checkpoints(
     staging: Path, completed: Mapping[int, Mapping[str, Any]]
 ) -> None:
     errors: list[str] = []
     resolved_staging = staging.resolve()
     for member_index in sorted(completed):
+        stats = completed[member_index].get("stats", {})
         files = completed[member_index].get("files", {})
         artifacts = files.get("artifacts")
         relative_paths = files.get("relative_paths")
@@ -803,6 +968,7 @@ def _verify_completed_checkpoints(
             errors.append(f"member {member_index}: checkpoint artifact path inventory mismatch")
             continue
 
+        member_error_count = len(errors)
         for artifact in artifacts:
             if not isinstance(artifact, dict):
                 errors.append(f"member {member_index}: malformed checkpoint artifact entry")
@@ -832,6 +998,33 @@ def _verify_completed_checkpoints(
                 errors.append(
                     f"member {member_index}: invalid checkpoint metadata for {relative}: {exc}"
                 )
+        if len(errors) != member_error_count:
+            continue
+        try:
+            actual_summary = _checkpoint_evidence_summary(staging, relative_paths)
+        except (OSError, ValueError, pa.ArrowException) as exc:
+            errors.append(
+                f"member {member_index}: cannot reconcile checkpoint evidence: {exc}"
+            )
+            continue
+        if files.get("evidence_summary") != actual_summary:
+            errors.append(f"member {member_index}: checkpoint evidence summary mismatch")
+        expected_issue_codes = {
+            str(code): int(count)
+            for code, count in stats.get("issue_codes", {}).items()
+        }
+        if actual_summary["data_rows"] != int(stats.get("output_rows", -1)):
+            errors.append(f"member {member_index}: canonical checkpoint row mismatch")
+        if actual_summary["issue_code_counts"] != expected_issue_codes:
+            errors.append(f"member {member_index}: exception checkpoint count mismatch")
+        if actual_summary["quarantined_evidence_records"] != int(
+            stats.get("quarantined_rows", -1)
+        ):
+            errors.append(f"member {member_index}: quarantine evidence count mismatch")
+        if actual_summary["missing_evidence_links"]:
+            errors.append(f"member {member_index}: exception evidence link is missing")
+        if actual_summary["raw_evidence_copy_violations"]:
+            errors.append(f"member {member_index}: raw-row evidence linkage is inconsistent")
 
     if errors:
         raise PipelineError(
@@ -1302,6 +1495,9 @@ def _process_member(
         file_details = {
             "relative_paths": relative_paths,
             "artifacts": _checkpoint_artifacts(staging, relative_paths),
+            "evidence_summary": _checkpoint_evidence_summary(
+                staging, relative_paths
+            ),
         }
         tracker.complete_member(member_sequence, stats, file_details)
         if work_member.exists():
@@ -1355,8 +1551,37 @@ def _compact_exceptions(staging: Path, config: Mapping[str, Any]) -> int:
     return rows
 
 
+def _finalize_publication(
+    staging: Path,
+    output: Path,
+    *,
+    interrupt_after_cleanup: str | None = None,
+) -> None:
+    for runtime_name in sorted(RUNTIME_NAMES):
+        runtime_path = staging / runtime_name
+        if runtime_path.exists():
+            runtime_path.unlink()
+        if interrupt_after_cleanup == runtime_name:
+            raise IngestionInterrupted(
+                f"Controlled interruption after publication cleanup of {runtime_name}"
+            )
+    for internal_name in ("work", "exception_parts"):
+        internal_path = staging / internal_name
+        if internal_path.exists():
+            _safe_remove_tree(internal_path, staging)
+        if interrupt_after_cleanup == internal_name:
+            raise IngestionInterrupted(
+                f"Controlled interruption after publication cleanup of {internal_name}"
+            )
+    os.replace(staging, output)
+
+
 def _publish_completed_staging(
-    staging: Path, output: Path, identity: Mapping[str, Any]
+    staging: Path,
+    output: Path,
+    identity: Mapping[str, Any],
+    *,
+    interrupt_after_cleanup: str | None = None,
 ) -> dict[str, Any] | None:
     """Finish an already validated staging result after a late interruption."""
 
@@ -1366,21 +1591,14 @@ def _publish_completed_staging(
     manifest = read_json(manifest_path)
     if manifest.get("status") != "complete" or manifest.get("identity") != dict(identity):
         return None
-    errors = verify_inventory(staging, manifest.get("outputs", []))
-    errors.extend(
-        _verify_published_schema_contract(staging, manifest.get("schema_contract"))
-    )
+    errors = _verify_completed_manifest(staging, manifest, identity)
     if errors:
         raise PipelineError("Completed staging verification failed: " + "; ".join(errors))
-    for runtime_name in RUNTIME_NAMES:
-        runtime_path = staging / runtime_name
-        if runtime_path.exists():
-            runtime_path.unlink()
-    for internal_name in ("work", "exception_parts"):
-        internal_path = staging / internal_name
-        if internal_path.exists():
-            _safe_remove_tree(internal_path, staging)
-    os.replace(staging, output)
+    _finalize_publication(
+        staging,
+        output,
+        interrupt_after_cleanup=interrupt_after_cleanup,
+    )
     processing = manifest["processing"]
     return {
         "status": "complete",
@@ -1861,6 +2079,7 @@ def run_ingestion(
     restart: bool = False,
     _interrupt_after_rows: int | None = None,
     _interrupt_before_publish: bool = False,
+    _interrupt_publication_after_cleanup: str | None = None,
 ) -> dict[str, Any]:
     """Ingest one archive; internal interruption control exists only for synthetic recovery tests."""
 
@@ -1928,7 +2147,12 @@ def run_ingestion(
         output, staging, identity, resume=resume, restart=restart
     )
     if was_resumed:
-        completed_result = _publish_completed_staging(staging, output, identity)
+        completed_result = _publish_completed_staging(
+            staging,
+            output,
+            identity,
+            interrupt_after_cleanup=_interrupt_publication_after_cleanup,
+        )
         if completed_result is not None:
             return completed_result
 
@@ -2014,7 +2238,7 @@ def run_ingestion(
 
         if validation["status"] == "failed":
             failed_manifest = {
-                "manifest_version": "1.0.0",
+                "manifest_version": MANIFEST_VERSION,
                 "schema_version": SCHEMA_VERSION,
                 "status": "failed",
                 "identity": identity,
@@ -2054,7 +2278,7 @@ def run_ingestion(
             if entry["path"].endswith(".parquet"):
                 entry["rows"] = pq.ParquetFile(staging / entry["path"]).metadata.num_rows
         manifest = {
-            "manifest_version": "1.0.0",
+            "manifest_version": MANIFEST_VERSION,
             "schema_version": SCHEMA_VERSION,
             "status": "complete",
             "identity": identity,
@@ -2099,22 +2323,17 @@ def run_ingestion(
             "central_integration_required": True,
         }
         write_json_atomic(staging / "source_manifest.json", manifest)
+        _write_publication_marker(staging, identity)
         if _interrupt_before_publish:
             raise IngestionInterrupted("Controlled interruption after validation and before publication")
     finally:
         tracker.close()
 
-    for runtime_name in RUNTIME_NAMES:
-        runtime_path = staging / runtime_name
-        if runtime_path.exists():
-            runtime_path.unlink()
-    work = staging / "work"
-    if work.exists():
-        _safe_remove_tree(work, staging)
-    exception_parts = staging / "exception_parts"
-    if exception_parts.exists():
-        _safe_remove_tree(exception_parts, staging)
-    os.replace(staging, output)
+    _finalize_publication(
+        staging,
+        output,
+        interrupt_after_cleanup=_interrupt_publication_after_cleanup,
+    )
     return {
         "status": "complete",
         "output": str(output),
