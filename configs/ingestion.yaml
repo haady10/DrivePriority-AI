@@ -1,0 +1,34 @@
+schema:
+  version: "1.0.0"
+  allowed_start_date: "2016-01-01"
+  allowed_end_date: "2026-06-30"
+  # Empty CSV fields are source-missing. Other tokens are conversion errors.
+  missing_tokens:
+    - ""
+
+processing:
+  # Rows are decoded as text and converted in bounded Arrow batches.
+  batch_rows: 32768
+  parquet_row_group_rows: 32768
+  encoding: "utf-8-sig"
+  duckdb_memory_limit: "1GB"
+  worker_threads: 2
+  maximum_member_uncompressed_bytes: null
+  maximum_compression_ratio: 200
+
+parquet:
+  compression: "zstd"
+  compression_level: 3
+  write_statistics: true
+  dictionary_encode_strings: true
+
+validation:
+  require_dates_within_quarter: true
+  preserve_source_duplicates: true
+  require_complete_row_accounting: true
+  resolve_final_device_identity: false
+  generate_future_labels: false
+
+recovery:
+  completed_output_policy: "verify"
+  staging_suffix: ".staging"
