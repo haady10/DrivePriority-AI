@@ -68,6 +68,11 @@ class QualityStats:
     daily_source_failure_flag_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     daily_retained_failure_flag_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     daily_quarantined_failure_flag_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    malformed_identifiable_failure_flag_counts: dict[str, int] = field(default_factory=dict)
+    daily_malformed_identifiable_failure_flag_counts: dict[str, dict[str, int]] = field(
+        default_factory=dict
+    )
+    malformed_unclassifiable_failure_rows: int = 0
     date_min: str | None = None
     date_max: str | None = None
 
@@ -178,6 +183,24 @@ class QualityStats:
             key = observation_date.isoformat()
             self.daily_failure_flags[key] = self.daily_failure_flags.get(key, 0) + 1
 
+    def record_malformed_failure_evidence(
+        self, flag: str | None, observation_date: date | None
+    ) -> None:
+        """Disclose readable flags from malformed-width records outside canonical counts."""
+
+        if flag not in {"0", "1"}:
+            self.malformed_unclassifiable_failure_rows += 1
+            return
+        self.malformed_identifiable_failure_flag_counts[flag] = (
+            self.malformed_identifiable_failure_flag_counts.get(flag, 0) + 1
+        )
+        if observation_date is not None:
+            self._increment_nested(
+                self.daily_malformed_identifiable_failure_flag_counts,
+                observation_date.isoformat(),
+                flag,
+            )
+
     def observe_output(self, row: Mapping[str, Any], member_smart_columns: Sequence[str]) -> None:
         self.output_rows += 1
         observed_date = row["date"].isoformat()
@@ -212,6 +235,7 @@ class QualityStats:
             "exact_duplicates",
             "conflicting_duplicates",
             "serial_identity_collisions",
+            "malformed_unclassifiable_failure_rows",
         ):
             setattr(self, name, getattr(self, name) + getattr(other, name))
         for target_name in (
@@ -231,6 +255,7 @@ class QualityStats:
             "failure_flag_counts",
             "retained_failure_flag_counts",
             "quarantined_failure_flag_counts",
+            "malformed_identifiable_failure_flag_counts",
         ):
             self._merge_counts(getattr(self, target_name), getattr(other, target_name))
         for target_name in (
@@ -240,6 +265,7 @@ class QualityStats:
             "daily_source_failure_flag_counts",
             "daily_retained_failure_flag_counts",
             "daily_quarantined_failure_flag_counts",
+            "daily_malformed_identifiable_failure_flag_counts",
         ):
             target = getattr(self, target_name)
             for outer, counts in getattr(other, target_name).items():
@@ -325,6 +351,13 @@ class QualityStats:
             "daily_quarantined_failure_flag_counts": self._sorted_nested(
                 self.daily_quarantined_failure_flag_counts
             ),
+            "malformed_identifiable_failure_flag_counts": dict(
+                sorted(self.malformed_identifiable_failure_flag_counts.items())
+            ),
+            "daily_malformed_identifiable_failure_flag_counts": self._sorted_nested(
+                self.daily_malformed_identifiable_failure_flag_counts
+            ),
+            "malformed_unclassifiable_failure_rows": self.malformed_unclassifiable_failure_rows,
             "date_min": self.date_min,
             "date_max": self.date_max,
         }
@@ -390,6 +423,12 @@ class QualityStats:
             quarantined_failure_flag_counts=dict(
                 payload.get("quarantined_failure_flag_counts", {})
             ),
+            malformed_identifiable_failure_flag_counts=dict(
+                payload.get("malformed_identifiable_failure_flag_counts", {})
+            ),
+            malformed_unclassifiable_failure_rows=int(
+                payload.get("malformed_unclassifiable_failure_rows", 0)
+            ),
             daily_source_failure_flag_counts={
                 key: dict(values)
                 for key, values in payload.get("daily_source_failure_flag_counts", {}).items()
@@ -402,6 +441,12 @@ class QualityStats:
                 key: dict(values)
                 for key, values in payload.get(
                     "daily_quarantined_failure_flag_counts", {}
+                ).items()
+            },
+            daily_malformed_identifiable_failure_flag_counts={
+                key: dict(values)
+                for key, values in payload.get(
+                    "daily_malformed_identifiable_failure_flag_counts", {}
                 ).items()
             },
             date_min=payload.get("date_min"),
@@ -613,6 +658,15 @@ def convert_record(
         else:
             string_extensions[name] = value_token
             smart_states[name] = "zero" if value_token and value_token.strip() == "0" else "value"
+
+    for name in analysis.unknown_columns:
+        add_issue(
+            "unsupported_source_field",
+            name,
+            token(name),
+            "Source field is preserved as linked row evidence but has no approved canonical mapping",
+            severity="error",
+        )
 
     disposition = "quarantined" if critical else "retained"
     issues = [

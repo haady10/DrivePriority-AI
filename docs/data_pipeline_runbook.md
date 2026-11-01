@@ -29,6 +29,8 @@ Each run requires:
 
 Keep original ZIP files unmodified in approved raw evidence storage. Store ZIPs, Parquet data, generated reports, and models outside GitHub.
 
+The local ZIP is hashed only while its size and modification metadata remain stable. Its byte size and SHA-256 are rechecked after archive inspection, after member processing, and immediately before manifest publication. A replacement or mutation at any of those boundaries leaves staging evidence intact and refuses final publication; the pipeline never associates output with an earlier source hash.
+
 ### Approved source inventory
 
 `configs/ingestion.yaml` contains the approved source-inventory structure but does not fabricate the 42 quarter entries. Its repository default is explicitly `unavailable` with an empty `quarters` mapping. Runs without a verified entry may be processed for evidence, but their validation status is `requires_review` and they are not eligible for central integration.
@@ -112,11 +114,13 @@ Byte-for-byte equality of independently written Parquet files is not claimed. Ph
 
 ### Schema report
 
-`schema_report.json` records original and normalized headers, per-member schema fingerprints, source CSV token types, canonical Parquet types, SMART availability by hardware model, and unexpected SMART-shaped fields.
+`schema_report.json` records original and normalized headers, per-member schema fingerprints, source CSV token types, canonical Parquet types, SMART availability by hardware model, unexpected SMART-shaped fields, and unsupported non-SMART source field names. Every value from an unsupported field is preserved in provenance-linked exception evidence and forces `requires_review`; ingestion never silently discards or guesses a canonical meaning for it.
 
 Each quarter retains its own observed SMART-column union; ingestion does not impose a fixed global SMART schema. Schema contract `1.0.0` is calculated only after canonical Parquet parts are written and their Arrow schemas are read back. The contract records the complete canonical column inventory, nullable flags, exact Arrow types, decimal precision and scale, recognized numeric SMART fields, unexpected SMART string extensions, Arrow metadata, per-file schema fingerprints, source-column availability, and per-member schema-drift evidence. The canonical fingerprint uses method `sha256_arrow_schema_ipc_v1`, meaning SHA-256 over the serialized Arrow schema actually present in canonical Parquet, including its schema metadata.
 
 The same schema contract and fingerprint appear in `schema_report.json`, `validation_results.json`, and `source_manifest.json`. Canonical Parquet metadata includes both `drivepriority.schema_version` and `drivepriority.schema_contract_version`. Publication fails if data-file schemas disagree, differ from the planned within-quarter union, cannot be read, or carry inconsistent contract metadata. Completed-output reuse recalculates the published schema evidence, while member checkpoint recovery verifies each recorded Parquet schema fingerprint before reuse.
+
+Before publication, validation streams every canonical and exception Parquet record batch so data pages—not only footers—are decoded under bounded batch size. It independently reconstructs retained failure counts from canonical Parquet and quarantined failure counts from single-copy source evidence, then reconciles both totals and daily counts with processing statistics. Any readback error or mismatch is structural failure.
 
 ### Quality report
 
@@ -128,7 +132,7 @@ The same schema contract and fingerprint appear in `schema_report.json`, `valida
 - Genuine numeric zero.
 - Canonical null.
 
-It also records expected and observed calendar dates, approved and unexplained gaps, out-of-quarter dates, separated source/retained/quarantined failure counts, malformed rows, duplicate classes, candidate serial collisions across dates, negative SMART aggregates, unexpected-extension source states, issue severities, model-level availability, complete row accounting, and an explicit zero count for fabricated rows.
+It also records expected and observed calendar dates, approved and unexplained gaps, out-of-quarter dates, separated source/retained/quarantined failure counts, separately disclosed safely identifiable and unclassifiable flags from malformed-width rows, duplicate classes, candidate serial collisions across dates, negative SMART aggregates, unexpected-extension source states, issue severities, model-level availability, complete row accounting, and an explicit zero count for fabricated rows.
 
 ### Validation and admission outcomes
 
@@ -166,7 +170,7 @@ Unexpected `smart_*` extensions that do not match the approved numeric naming co
 
 The only valid canonical failure values are source literals `0` and `1`. They are preserved without relabeling. A row with an invalid or missing failure flag is kept in quarantine evidence and excluded from typed drive-day Parquet because it cannot satisfy the canonical contract.
 
-Failure accounting is reported separately for all valid source flags, flags retained in canonical Parquet, and valid flags belonging to quarantined rows. Each category includes daily `0`/`1` totals and source-to-output reconciliation. Quarantined failures are never counted as retained drive-day failures. Ingestion preserves every retained failure-day record and does not select a first failure event.
+Failure accounting is reported separately for all valid well-formed source flags, flags retained in canonical Parquet, and valid flags belonging to ordinary quarantined rows. Each category includes daily `0`/`1` totals and source-to-output reconciliation. A readable positional flag in a malformed-width record is disclosed in a separate evidence category; it is never promoted into valid-source, quarantined-drive-day, or retained-drive-day counts, and an unreadable position is explicitly counted as unclassifiable. Ingestion preserves every retained failure-day record and does not select a first failure event.
 
 Every parsed source row has exactly one disjoint disposition:
 

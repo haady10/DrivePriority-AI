@@ -16,6 +16,7 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
+import drivepriority.data.ingest as ingest_module
 from drivepriority import __version__
 from drivepriority.data.ingest import (
     IngestionInterrupted,
@@ -1747,12 +1748,12 @@ def test_failure_flags_reconcile_source_retained_and_quarantined_rows(
         for check in read_json(output / "validation_results.json")["checks"]
         if check["name"] == "failure_flag_source_to_output_reconciliation"
     )
-    assert reconciliation_check == {
-        "name": "failure_flag_source_to_output_reconciliation",
-        "passed": True,
-        "total_counts_passed": True,
-        "daily_counts_passed": True,
-    }
+    assert reconciliation_check["passed"] is True
+    assert reconciliation_check["total_counts_passed"] is True
+    assert reconciliation_check["daily_counts_passed"] is True
+    assert reconciliation_check["independent_parquet_and_evidence_counts_passed"] is True
+    assert reconciliation_check["readback"]["retained_counts"] == {"0": 1, "1": 2}
+    assert reconciliation_check["readback"]["quarantined_counts"] == {"0": 1, "1": 1}
 
 
 def test_unexpected_smart_extension_states_are_audited_without_numeric_interpretation(
@@ -2559,3 +2560,181 @@ def test_completed_output_requires_exhaustive_manifest_inventory(
             output=output,
             source_url=SOURCE_URL,
         )
+
+
+def test_unknown_source_values_are_preserved_as_linked_review_evidence(
+    tmp_path: Path,
+) -> None:
+    archive = write_archive(
+        tmp_path / "unknown-source-field.zip",
+        {
+            "day.csv": [
+                [*BASE_HEADER, "Rack Location"],
+                ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0", "Rack-A/07"],
+            ]
+        },
+    )
+    output = tmp_path / "unknown-source-field-output"
+
+    result = run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    exceptions = pq.read_table(output / "exceptions.parquet").to_pylist()
+    unsupported = [
+        row for row in exceptions if row["exception_code"] == "unsupported_source_field"
+    ]
+    assert result["validation_status"] == "requires_review"
+    assert len(unsupported) == 1
+    assert unsupported[0]["column_name"] == "rack_location"
+    assert unsupported[0]["original_header"] == "Rack Location"
+    assert unsupported[0]["raw_value"] == "Rack-A/07"
+    assert unsupported[0]["source_record_number"] == 1
+    assert json.loads(unsupported[0]["raw_record_json"])["Rack Location"] == "Rack-A/07"
+    assert "rack_location" not in read_drive_data(output).schema.names
+
+
+def test_malformed_width_failure_flags_are_disclosed_outside_drive_day_counts(
+    tmp_path: Path,
+) -> None:
+    archive = write_archive(
+        tmp_path / "malformed-width-failures.zip",
+        {
+            "day.csv": [
+                BASE_HEADER,
+                ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"],
+                ["2016-01-02", "SN-2", "Model", "Vendor", "1000", "1", "extra"],
+                ["2016-01-03", "SN-3", "Model", "Vendor", "1000"],
+            ]
+        },
+    )
+    output = tmp_path / "malformed-width-failures-output"
+
+    run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    failure = read_json(output / "quality_report.json")["failure_flags"]
+    malformed = failure["malformed_width_evidence"]
+    assert failure["valid_source_counts"] == {"0": 1}
+    assert failure["retained_canonical_counts"] == {"0": 1}
+    assert failure["quarantine_evidence_counts"] == {}
+    assert malformed["safely_identifiable_flag_counts"] == {"1": 1}
+    assert malformed["daily_safely_identifiable_flag_counts"] == {
+        "2016-01-02": {"1": 1}
+    }
+    assert malformed["unclassifiable_failure_rows"] == 1
+    assert malformed["included_in_valid_source_or_output_counts"] is False
+    assert malformed["accounting_scope_complete"] is False
+
+
+def test_corrupted_parquet_data_pages_fail_bounded_readback_validation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = normal_archive(tmp_path)
+    output = tmp_path / "corrupt-data-page-output"
+    original_compact = ingest_module._compact_exceptions
+
+    def compact_then_corrupt(staging: Path, config) -> int:
+        rows = original_compact(staging, config)
+        target = next((staging / "data").rglob("*.parquet"))
+        parquet_file = pq.ParquetFile(target)
+        failure_index = parquet_file.schema_arrow.get_field_index("failure")
+        column = parquet_file.metadata.row_group(0).column(failure_index)
+        start = column.dictionary_page_offset
+        if start is None or start < 0:
+            start = column.data_page_offset
+        payload = bytearray(target.read_bytes())
+        corrupt_start = int(start) + 4
+        corrupt_end = min(
+            corrupt_start + max(16, int(column.total_compressed_size) // 2),
+            int(start) + int(column.total_compressed_size),
+        )
+        payload[corrupt_start:corrupt_end] = b"\xff" * (corrupt_end - corrupt_start)
+        target.write_bytes(payload)
+        assert pq.ParquetFile(target).metadata.num_rows > 0
+        return rows
+
+    monkeypatch.setattr(ingest_module, "_compact_exceptions", compact_then_corrupt)
+    with pytest.raises(ValidationError, match="Structural validation failed"):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
+
+    staging = output.with_name(output.name + ".staging")
+    check = next(
+        item
+        for item in read_json(staging / "validation_results.json")["checks"]
+        if item["name"] == "parquet_files_readable"
+    )
+    assert check["passed"] is False
+    assert check["bounded_full_page_readback_errors"]
+    assert not output.exists()
+
+
+def test_source_zip_replacement_during_processing_refuses_publication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = complete_quarter_archive(tmp_path)
+    output = tmp_path / "source-replacement-output"
+    original_process_member = ingest_module._process_member
+
+    def process_then_replace(*args, **kwargs):
+        result = original_process_member(*args, **kwargs)
+        write_archive(
+            archive,
+            {
+                "replacement.csv": [
+                    BASE_HEADER,
+                    ["2016-01-01", "REPLACED", "Other", "Vendor", "1", "0"],
+                ]
+            },
+        )
+        return result
+
+    monkeypatch.setattr(ingest_module, "_process_member", process_then_replace)
+    with pytest.raises(PipelineError, match="Source ZIP identity changed"):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
+    assert not output.exists()
+    assert output.with_name(output.name + ".staging").exists()
+
+
+def test_structurally_valid_zip_with_corrupt_crc_is_rejected(tmp_path: Path) -> None:
+    archive = tmp_path / "bad-crc.zip"
+    payload = (
+        ",".join(BASE_HEADER) + "\n2016-01-01,SN-1,Model,Vendor,1000,0\n"
+    ).encode("utf-8")
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as target:
+        target.writestr("day.csv", payload)
+    raw = bytearray(archive.read_bytes())
+    position = raw.index(b"SN-1")
+    raw[position] ^= 0x01
+    archive.write_bytes(raw)
+
+    with pytest.raises((PipelineError, zipfile.BadZipFile)):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / "bad-crc-output",
+            source_url=SOURCE_URL,
+        )
+    assert not (tmp_path / "bad-crc-output").exists()

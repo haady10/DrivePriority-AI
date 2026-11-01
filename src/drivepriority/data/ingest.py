@@ -48,6 +48,7 @@ from drivepriority.data.schema import (
     analyze_headers,
     canonical_arrow_schema,
     exception_arrow_schema,
+    normalize_header,
     parse_iso_date,
     raw_record_evidence,
     union_smart_columns,
@@ -517,6 +518,34 @@ def inspect_archive(
         ],
     }
     return members, inventory
+
+
+def _stable_archive_identity(archive: Path) -> dict[str, Any]:
+    """Hash a source only when its file metadata stays stable throughout the read."""
+
+    before = archive.stat()
+    digest = sha256_file(archive)
+    after = archive.stat()
+    stable_fields = ("st_size", "st_mtime_ns")
+    if any(getattr(before, name) != getattr(after, name) for name in stable_fields):
+        raise PipelineError("Source ZIP changed while its identity was being calculated")
+    return {
+        "bytes": before.st_size,
+        "sha256": digest,
+    }
+
+
+def _verify_archive_unchanged(
+    archive: Path, expected: Mapping[str, Any], *, phase: str
+) -> None:
+    try:
+        observed = _stable_archive_identity(archive)
+    except OSError as exc:
+        raise PipelineError(f"Source ZIP is unavailable during {phase}") from exc
+    if observed != dict(expected):
+        raise PipelineError(
+            f"Source ZIP identity changed during {phase}; refusing publication"
+        )
 
 
 def _assess_source_inventory(
@@ -1441,6 +1470,25 @@ def _process_member(
                             stats.record_issue(issue)
                             stats.malformed_rows += 1
                             stats.quarantined_rows += 1
+                            malformed_index = member.analysis.index_by_canonical
+                            date_position = malformed_index.get("date")
+                            failure_position = malformed_index.get("failure")
+                            malformed_date: date | None = None
+                            if date_position is not None and date_position < len(values):
+                                try:
+                                    malformed_date = parse_iso_date(values[date_position])
+                                except ValueError:
+                                    pass
+                            malformed_flag = (
+                                values[failure_position].strip()
+                                if failure_position is not None
+                                and failure_position < len(values)
+                                and values[failure_position].strip() in {"0", "1"}
+                                else None
+                            )
+                            stats.record_malformed_failure_evidence(
+                                malformed_flag, malformed_date
+                            )
                         else:
                             index = member.analysis.index_by_canonical
                             date_position = index.get("date")
@@ -1978,6 +2026,25 @@ def _quality_report(
                     for item in date_items.values()
                 ),
             },
+            "malformed_width_evidence": {
+                "safely_identifiable_flag_counts": dict(
+                    sorted(stats.malformed_identifiable_failure_flag_counts.items())
+                ),
+                "daily_safely_identifiable_flag_counts": QualityStats._sorted_nested(
+                    stats.daily_malformed_identifiable_failure_flag_counts
+                ),
+                "unclassifiable_failure_rows": (
+                    stats.malformed_unclassifiable_failure_rows
+                ),
+                "included_in_valid_source_or_output_counts": False,
+                "accounting_scope_complete": (
+                    stats.malformed_unclassifiable_failure_rows == 0
+                ),
+                "interpretation": (
+                    "Malformed-width records remain quarantine evidence. Readable positional "
+                    "flags are disclosed separately and never treated as retained drive days."
+                ),
+            },
             "first_failure_event_selection_performed": False,
             "interpretation": "Original recorded 0/1 flags; no physical-failure inference performed",
         },
@@ -1997,6 +2064,103 @@ def _quality_report(
     }
 
 
+def _readback_failure_evidence(
+    staging: Path,
+) -> dict[str, Any]:
+    """Decode every Parquet data page and independently reconstruct failure counts."""
+
+    retained: Counter[str] = Counter()
+    retained_daily: dict[str, Counter[str]] = {}
+    quarantined: Counter[str] = Counter()
+    quarantined_daily: dict[str, Counter[str]] = {}
+    decoded_rows = 0
+    errors: list[str] = []
+
+    def record(
+        counts: Counter[str], daily: dict[str, Counter[str]], flag: str, day: str | None
+    ) -> None:
+        counts[flag] += 1
+        if day is not None:
+            daily.setdefault(day, Counter())[flag] += 1
+
+    data_files = (
+        sorted((staging / "data").rglob("*.parquet"))
+        if (staging / "data").exists()
+        else []
+    )
+    for path in data_files:
+        try:
+            parquet_file = pq.ParquetFile(path)
+            for batch in parquet_file.iter_batches(batch_size=8192):
+                decoded_rows += batch.num_rows
+                failures = batch.column(batch.schema.get_field_index("failure")).to_pylist()
+                dates = batch.column(batch.schema.get_field_index("date")).to_pylist()
+                for flag, observed_date in zip(failures, dates, strict=True):
+                    record(
+                        retained,
+                        retained_daily,
+                        str(flag),
+                        observed_date.isoformat() if observed_date is not None else None,
+                    )
+        except Exception as exc:
+            errors.append(f"{path.relative_to(staging).as_posix()}: {type(exc).__name__}")
+
+    exceptions_path = staging / "exceptions.parquet"
+    seen_quarantined_evidence: set[str] = set()
+    if exceptions_path.is_file():
+        try:
+            parquet_file = pq.ParquetFile(exceptions_path)
+            for batch in parquet_file.iter_batches(batch_size=8192):
+                rows = batch.to_pylist()
+                for row in rows:
+                    if row.get("row_disposition") != "quarantined":
+                        continue
+                    evidence_id = row.get("row_evidence_id")
+                    raw_json = row.get("raw_record_json")
+                    if (
+                        not isinstance(evidence_id, str)
+                        or evidence_id in seen_quarantined_evidence
+                        or not isinstance(raw_json, str)
+                    ):
+                        continue
+                    seen_quarantined_evidence.add(evidence_id)
+                    payload = json.loads(raw_json)
+                    if not isinstance(payload, dict) or "headers" in payload:
+                        continue
+                    normalized = {normalize_header(str(key)): value for key, value in payload.items()}
+                    raw_flag = normalized.get("failure")
+                    flag = raw_flag.strip() if isinstance(raw_flag, str) else None
+                    if flag not in {"0", "1"}:
+                        continue
+                    raw_date = normalized.get("date")
+                    observed_date: str | None = None
+                    if isinstance(raw_date, str):
+                        try:
+                            observed_date = parse_iso_date(raw_date).isoformat()
+                        except ValueError:
+                            pass
+                    record(quarantined, quarantined_daily, flag, observed_date)
+        except Exception as exc:
+            errors.append(
+                f"exceptions.parquet: {type(exc).__name__}"
+            )
+
+    def plain_nested(values: Mapping[str, Counter[str]]) -> dict[str, dict[str, int]]:
+        return {
+            day: dict(sorted(counts.items()))
+            for day, counts in sorted(values.items())
+        }
+
+    return {
+        "decoded_canonical_rows": decoded_rows,
+        "retained_counts": dict(sorted(retained.items())),
+        "retained_daily_counts": plain_nested(retained_daily),
+        "quarantined_counts": dict(sorted(quarantined.items())),
+        "quarantined_daily_counts": plain_nested(quarantined_daily),
+        "errors": errors,
+    }
+
+
 def _validation_results(
     stats: QualityStats,
     output_schema: pa.Schema,
@@ -2008,17 +2172,19 @@ def _validation_results(
     source_assessment: Mapping[str, Any],
 ) -> dict[str, Any]:
     data_files = sorted((staging / "data").rglob("*.parquet")) if (staging / "data").exists() else []
-    parquet_rows = 0
+    readback = _readback_failure_evidence(staging)
+    parquet_rows = int(readback["decoded_canonical_rows"])
     schemas_match = True
     readable = True
     for path in data_files:
         try:
             parquet_file = pq.ParquetFile(path)
-            parquet_rows += parquet_file.metadata.num_rows
             schemas_match = schemas_match and parquet_file.schema_arrow.equals(output_schema, check_metadata=True)
         except Exception:
             readable = False
             schemas_match = False
+    if readback["errors"]:
+        readable = False
     failure_flags = (
         set(stats.failure_flag_counts)
         | set(stats.retained_failure_flag_counts)
@@ -2046,6 +2212,16 @@ def _validation_results(
             | set(stats.daily_quarantined_failure_flag_counts.get(observed_date, {}))
         )
     )
+    independent_failure_reconcile = (
+        readback["retained_counts"]
+        == dict(sorted(stats.retained_failure_flag_counts.items()))
+        and readback["quarantined_counts"]
+        == dict(sorted(stats.quarantined_failure_flag_counts.items()))
+        and readback["retained_daily_counts"]
+        == QualityStats._sorted_nested(stats.daily_retained_failure_flag_counts)
+        and readback["quarantined_daily_counts"]
+        == QualityStats._sorted_nested(stats.daily_quarantined_failure_flag_counts)
+    )
     checks = [
         {"name": "all_csv_members_completed", "passed": completed_count == member_count},
         validate_accounting(stats),
@@ -2054,7 +2230,11 @@ def _validation_results(
             "passed": stats.output_rows > 0,
             "retained_output_rows": stats.output_rows,
         },
-        {"name": "parquet_files_readable", "passed": readable},
+        {
+            "name": "parquet_files_readable",
+            "passed": readable,
+            "bounded_full_page_readback_errors": readback["errors"],
+        },
         {"name": "canonical_schema_matches", "passed": schemas_match},
         {
             "name": "parquet_row_count_matches",
@@ -2064,9 +2244,17 @@ def _validation_results(
         },
         {
             "name": "failure_flag_source_to_output_reconciliation",
-            "passed": failure_totals_reconcile and failure_daily_reconcile,
+            "passed": (
+                failure_totals_reconcile
+                and failure_daily_reconcile
+                and independent_failure_reconcile
+            ),
             "total_counts_passed": failure_totals_reconcile,
             "daily_counts_passed": failure_daily_reconcile,
+            "independent_parquet_and_evidence_counts_passed": (
+                independent_failure_reconcile
+            ),
+            "readback": readback,
         },
         {
             "name": "published_quarterly_schema_contract",
@@ -2163,13 +2351,15 @@ def run_ingestion(
     config, config_sha256 = load_configuration(config_path)
     start, end = quarter_bounds(quarter)
     _quarter_within_scope(config, start, end)
-    archive_sha256 = sha256_file(archive)
+    source_snapshot = _stable_archive_identity(archive)
+    archive_sha256 = str(source_snapshot["sha256"])
     repository = Path(__file__).resolve().parents[3]
     try:
         pipeline_identity = pipeline_recovery_identity(repository)
     except OSError as exc:
         raise PipelineError(f"Cannot establish pipeline recovery identity: {exc}") from exc
     members, archive_inventory = inspect_archive(archive, config)
+    _verify_archive_unchanged(archive, source_snapshot, phase="archive inspection")
     source_assessment = _assess_source_inventory(
         config,
         quarter=quarter,
@@ -2190,6 +2380,7 @@ def run_ingestion(
     )
 
     if dry_run:
+        _verify_archive_unchanged(archive, source_snapshot, phase="dry-run verification")
         return {
             "status": "dry_run",
             "identity": identity,
@@ -2263,6 +2454,7 @@ def run_ingestion(
 
         completed = tracker.completed_members()
         stats = _aggregate_completed(completed)
+        _verify_archive_unchanged(archive, source_snapshot, phase="member processing")
         exception_rows = _compact_exceptions(staging, config)
         schema_contract = _quarterly_schema_contract(
             staging,
@@ -2316,6 +2508,8 @@ def run_ingestion(
             write_json_atomic(staging / "source_manifest.json", failed_manifest)
             raise ValidationError("Structural validation failed; output remains in staging")
 
+        _verify_archive_unchanged(archive, source_snapshot, phase="pre-publication validation")
+
         member_reports = []
         for sequence, member in enumerate(members):
             member_stats = QualityStats.from_dict(completed[sequence]["stats"])
@@ -2354,7 +2548,7 @@ def run_ingestion(
                 "url": source_url,
                 "local_path": str(archive),
                 "original_filename": archive.name,
-                "bytes": archive.stat().st_size,
+                "bytes": source_snapshot["bytes"],
                 "sha256": archive_sha256,
                 "acquisition_status": "provided_local_existing_archive",
                 "download_performed_by_pipeline": False,
@@ -2389,13 +2583,16 @@ def run_ingestion(
             "outputs": inventory,
             "central_integration_required": True,
         }
+        _verify_archive_unchanged(archive, source_snapshot, phase="manifest publication")
         write_json_atomic(staging / "source_manifest.json", manifest)
+        _verify_archive_unchanged(archive, source_snapshot, phase="publication marker creation")
         _write_publication_marker(staging, identity)
         if _interrupt_before_publish:
             raise IngestionInterrupted("Controlled interruption after validation and before publication")
     finally:
         tracker.close()
 
+    _verify_archive_unchanged(archive, source_snapshot, phase="atomic publication")
     _finalize_publication(
         staging,
         output,
