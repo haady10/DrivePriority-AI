@@ -103,6 +103,12 @@ The non-Hive `data/2016Q1/` directory is the physical quarter partition. Every P
 
 `source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, approved-inventory assessment and provenance, member inventory, original headers, CRC results, configuration and hash, Python/dependency versions, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, disk-space preflight, row counts, output checksums, validation status, and processing timestamps. If Git metadata is unavailable, the commit and scoped dirty state are recorded as unknown rather than being reported as clean; the exact source and requirements hashes remain mandatory.
 
+### Reproducibility scope
+
+Reproducibility method `1.0.0` claims semantic equivalence only when archive, configuration, source URL, assigned quarter, schema, pipeline recovery identity, and dependency environment are appropriately matched. The comparison covers canonical row values and Arrow types, Arrow/Parquet schemas, schema/quality/validation reports, source-member and exception inventories, failure counts, and source-to-output accounting.
+
+Byte-for-byte equality of independently written Parquet files is not claimed. Physical bytes can vary with PyArrow, compression libraries, platform behavior, or writer metadata even when the scientific content is equivalent. Processing timestamps, observed free disk space, absolute local paths, and host metadata are intentionally variable and must be separated from scientific comparisons. Each manifest and validation report records the method version, comparison scope, variable fields, and limitations. Manifest checksums still certify the immutable files from one specific published run; semantic comparison does not replace those integrity checks.
+
 ### Schema report
 
 `schema_report.json` records original and normalized headers, per-member schema fingerprints, source CSV token types, canonical Parquet types, SMART availability by hardware model, and unexpected SMART-shaped fields.
@@ -238,6 +244,12 @@ $env:PYTHONPATH = "src"
 ```
 
 Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, required headers, empty and zero-retained archives, exact SMART precision, blank/zero/negative/invalid/absent states, unexpected SMART extension states, separated failure-flag accounting, quarantines, malformed records, wide invalid rows with linked single-copy raw evidence, independent row/byte exception batching, streaming exception compaction, parser and decoding failure reports, same-date and cross-date collision classes across members and batches, original serial preservation, approved and unexplained calendar gaps, source-inventory provenance and mismatch handling, ordered validation outcomes, central admission, configuration safeguards, ZIP and disk limits, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, pipeline identity changes, checkpoint integrity, interruption, resume, and scoped restart.
+
+### Historical compatibility evidence
+
+The historical-layout suite uses explicitly synthetic fixtures representing contract variations relevant to 2016–2017, the 2018 transition period, a middle period, 2025, and January–June 2026. It exercises optional manufacturer data, changing SMART-column presence across members, case/spacing/underscore/BOM header forms, blank/signed/unusual/invalid tokens, nested and date-oriented member names, and quarter-boundary dates including 2026-06-30. These fixtures are invented test inputs, not transcriptions of authenticated Backblaze records, and they do not prove real historical compatibility.
+
+Release acceptance still requires independently verified real-archive tests across the approved January 2016–June 2026 inventory, with observed headers and tokens reconciled against authentic source evidence. It also requires measured peak-RAM benchmarks on representative real quarterly archives. Neither evidence is fabricated or inferred from the synthetic suite.
 
 The existing H2O smoke test is separate. It verifies software startup with synthetic model data and is not evidence that the ingestion or research methodology is correct.
 

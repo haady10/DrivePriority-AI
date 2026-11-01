@@ -69,6 +69,7 @@ RUNTIME_NAMES = {
     "state.duckdb.wal",
     "processing_failure.json",
 }
+REPRODUCIBILITY_METHOD_VERSION = "1.0.0"
 
 
 class PipelineError(RuntimeError):
@@ -77,6 +78,32 @@ class PipelineError(RuntimeError):
 
 class IngestionInterrupted(PipelineError):
     """Controlled interruption used to verify recovery behavior."""
+
+
+def _reproducibility_evidence() -> dict[str, Any]:
+    return {
+        "method_version": REPRODUCIBILITY_METHOD_VERSION,
+        "scope": "semantic_equivalence_for_matching_provenance_identity",
+        "semantic_comparison_includes": [
+            "canonical row values and Arrow types",
+            "Arrow and Parquet schemas including metadata",
+            "schema, quality, and validation reports",
+            "source-member and exception evidence inventories",
+            "failure counts and source-to-output accounting",
+        ],
+        "intentionally_variable_metadata": [
+            "processing timestamps",
+            "available disk space at preflight",
+            "absolute local paths",
+            "host platform and dependency metadata when environments differ",
+        ],
+        "byte_for_byte_file_equality_claimed": False,
+        "limitations": [
+            "Parquet physical bytes can vary with library, codec, platform, or writer metadata",
+            "semantic comparison does not replace manifest checksum verification for one published run",
+            "real historical archives require separate acceptance testing",
+        ],
+    }
 
 
 @dataclass(frozen=True)
@@ -1285,6 +1312,22 @@ def _schema_report(
             "Raw identifiers are preserved. Stable device_key construction and cross-quarter identity "
             "resolution are central integration responsibilities."
         ),
+        "historical_compatibility_evidence": {
+            "status": "contract_and_synthetic_fixture_coverage_only",
+            "synthetic_fixtures_are_authentic_records": False,
+            "covered_variability": [
+                "optional manufacturer column",
+                "SMART column presence and absence across members",
+                "case, spacing, underscore, and UTF-8 BOM header forms",
+                "blank, signed, unusual, and invalid SMART tokens",
+                "nested and date-oriented archive member names",
+                "assigned-quarter boundary dates through 2026-06-30",
+            ],
+            "outstanding_evidence": [
+                "acceptance results for independently verified real archives from every historical period",
+                "measured peak RAM on representative real quarterly archives",
+            ],
+        },
     }
 
 
@@ -1611,7 +1654,7 @@ def _validation_results(
             "requires_explicit_review": status == "requires_review",
         },
         "quality_findings_do_not_resolve_identity": True,
-        "deterministic_for_identical_inputs": True,
+        "reproducibility": _reproducibility_evidence(),
     }
 
 
@@ -1847,6 +1890,7 @@ def run_ingestion(
                 "disk_space_preflight": disk_preflight,
             },
             "validation": validation,
+            "reproducibility": _reproducibility_evidence(),
             "outputs": inventory,
             "central_integration_required": True,
         }

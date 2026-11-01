@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from datetime import date, timedelta
+from decimal import Decimal
 import hashlib
 import io
 import json
@@ -820,12 +821,120 @@ def test_validation_results_are_deterministic_for_identical_inputs(tmp_path: Pat
     assert (first / "validation_results.json").read_bytes() == (
         second / "validation_results.json"
     ).read_bytes()
+    validation = read_json(first / "validation_results.json")
+    assert "deterministic_for_identical_inputs" not in validation
+    assert validation["reproducibility"]["method_version"] == "1.0.0"
+    assert validation["reproducibility"]["byte_for_byte_file_equality_claimed"] is False
     assert not {
         "label",
         "feature",
         "prediction",
         "risk_score",
     }.intersection(read_drive_data(first).schema.names)
+
+
+def test_independent_runs_match_semantically_across_data_reports_and_evidence(
+    tmp_path: Path,
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path, batch_rows=1, exception_batch_rows=1)
+    outputs = [tmp_path / "semantic-first", tmp_path / "semantic-second"]
+    for output in outputs:
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
+
+    first_data = read_drive_data(outputs[0])
+    second_data = read_drive_data(outputs[1])
+    assert first_data.schema.equals(second_data.schema, check_metadata=True)
+    assert first_data.to_pylist() == second_data.to_pylist()
+
+    first_parts = sorted((outputs[0] / "data").rglob("*.parquet"))
+    second_parts = sorted((outputs[1] / "data").rglob("*.parquet"))
+    assert [path.relative_to(outputs[0]).as_posix() for path in first_parts] == [
+        path.relative_to(outputs[1]).as_posix() for path in second_parts
+    ]
+    for first_part, second_part in zip(first_parts, second_parts, strict=True):
+        assert pq.ParquetFile(first_part).schema_arrow.equals(
+            pq.ParquetFile(second_part).schema_arrow,
+            check_metadata=True,
+        )
+
+    first_exceptions = pq.read_table(outputs[0] / "exceptions.parquet")
+    second_exceptions = pq.read_table(outputs[1] / "exceptions.parquet")
+    assert first_exceptions.schema.equals(second_exceptions.schema, check_metadata=True)
+    assert first_exceptions.to_pylist() == second_exceptions.to_pylist()
+
+    for report_name in (
+        "schema_report.json",
+        "quality_report.json",
+        "validation_results.json",
+    ):
+        assert read_json(outputs[0] / report_name) == read_json(outputs[1] / report_name)
+
+    manifests = [read_json(output / "source_manifest.json") for output in outputs]
+    source_fields = (
+        "original_filename",
+        "bytes",
+        "sha256",
+        "member_count",
+        "members",
+        "approved_inventory_evidence",
+    )
+    assert {name: manifests[0]["source"][name] for name in source_fields} == {
+        name: manifests[1]["source"][name] for name in source_fields
+    }
+    semantic_inventories = [
+        sorted(
+            (entry["path"], entry.get("rows"))
+            for entry in manifest["outputs"]
+        )
+        for manifest in manifests
+    ]
+    assert semantic_inventories[0] == semantic_inventories[1]
+    first_quality = read_json(outputs[0] / "quality_report.json")
+    second_quality = read_json(outputs[1] / "quality_report.json")
+    assert first_quality["failure_flags"] == second_quality["failure_flags"]
+    assert first_quality["row_accounting"] == second_quality["row_accounting"]
+    assert manifests[0]["reproducibility"] == manifests[1]["reproducibility"]
+    assert manifests[0]["reproducibility"]["intentionally_variable_metadata"]
+
+
+def test_source_or_configuration_change_updates_provenance_identity(tmp_path: Path) -> None:
+    first_archive = write_archive(
+        tmp_path / "source-a.zip",
+        {"day.csv": [[*BASE_HEADER, "smart_5_raw"], ["2016-01-01", "SN", "M", "V", "1", "0", "1"]]},
+    )
+    second_archive = write_archive(
+        tmp_path / "source-b.zip",
+        {"day.csv": [[*BASE_HEADER, "smart_5_raw"], ["2016-01-01", "SN", "M", "V", "1", "0", "2"]]},
+    )
+    first_config = write_test_config(tmp_path, batch_rows=2)
+    second_config = tmp_path / "ingestion-changed.yaml"
+    changed = yaml.safe_load(first_config.read_text(encoding="utf-8"))
+    changed["processing"]["batch_rows"] = 3
+    second_config.write_text(yaml.safe_dump(changed, sort_keys=False), encoding="utf-8")
+
+    def identity(archive: Path, config: Path) -> dict[str, object]:
+        return run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / f"unused-{archive.stem}-{config.stem}",
+            source_url=SOURCE_URL,
+            dry_run=True,
+        )["identity"]
+
+    baseline = identity(first_archive, first_config)
+    source_changed = identity(second_archive, first_config)
+    config_changed = identity(first_archive, second_config)
+    assert baseline["archive_sha256"] != source_changed["archive_sha256"]
+    assert baseline["config_sha256"] != config_changed["config_sha256"]
+    assert baseline["pipeline"] == source_changed["pipeline"] == config_changed["pipeline"]
 
 
 def test_corrupt_zip_and_header_collision_fail_before_final_publication(tmp_path: Path) -> None:
@@ -1808,3 +1917,207 @@ def test_completed_exception_outputs_resume_with_revised_evidence_schema(tmp_pat
     assert exceptions.num_rows == 6
     assert sum(value is not None for value in exceptions.column("raw_record_json").to_pylist()) == 1
     assert len(set(exceptions.column("row_evidence_id").to_pylist())) == 1
+
+
+SYNTHETIC_HISTORICAL_LAYOUTS = [
+    pytest.param(
+        {
+            "quarter": "2016Q1",
+            "archive_name": "data_Q1_2016.zip",
+            "members": [
+                (
+                    "data_Q1_2016/2016-01-01.csv",
+                    [
+                        [
+                            "Date",
+                            "Serial Number",
+                            "Model",
+                            "Capacity Bytes",
+                            "Failure",
+                            "SMART 1 Normalized",
+                            "SMART 1 Raw",
+                        ],
+                        ["2016-01-01", "SYN-2016", "Legacy", "1000", "0", "100", "1"],
+                    ],
+                    False,
+                )
+            ],
+            "expected": {
+                "manufacturer": [None],
+                "smart_1_normalized": [Decimal(100)],
+                "smart_1_raw": [Decimal(1)],
+            },
+            "exception_codes": [],
+        },
+        id="synthetic-2016-layout",
+    ),
+    pytest.param(
+        {
+            "quarter": "2017Q4",
+            "archive_name": "2017-Q4-drive-stats.zip",
+            "members": [
+                (
+                    "2017-12-31.csv",
+                    [
+                        [*BASE_HEADER[:3], "capacity_bytes", "failure", "smart_5_raw", "smart_9_raw"],
+                        ["2017-12-31", "SYN-2017", "Legacy", "2000", "0", "", "0007"],
+                    ],
+                    True,
+                )
+            ],
+            "expected": {
+                "manufacturer": [None],
+                "smart_5_raw": [None],
+                "smart_9_raw": [Decimal(7)],
+            },
+            "exception_codes": [],
+        },
+        id="synthetic-2017-bom-layout",
+    ),
+    pytest.param(
+        {
+            "quarter": "2018Q1",
+            "archive_name": "2018-transition.zip",
+            "members": [
+                (
+                    "transition/2018-03-31.csv",
+                    [
+                        [*BASE_HEADER[:3], "capacity_bytes", "failure", "smart_188_raw", "smart_190_normalized"],
+                        ["2018-03-31", "SYN-2018", "Transition", "3000", "1", "+7", "0"],
+                    ],
+                    False,
+                )
+            ],
+            "expected": {
+                "manufacturer": [None],
+                "smart_188_raw": [Decimal(7)],
+                "smart_190_normalized": [Decimal(0)],
+            },
+            "exception_codes": [],
+        },
+        id="synthetic-2018-transition-layout",
+    ),
+    pytest.param(
+        {
+            "quarter": "2021Q3",
+            "archive_name": "middle-period-2021Q3.zip",
+            "members": [
+                (
+                    "data_Q3_2021/day_2021-07-01.csv",
+                    [
+                        [*BASE_HEADER, "smart_197_raw", "smart_vendor_blob"],
+                        ["2021-07-01", "SYN-2021", "Middle", "Vendor", "4000", "0", "N/A", "opaque"],
+                    ],
+                    False,
+                )
+            ],
+            "expected": {
+                "manufacturer": ["Vendor"],
+                "smart_197_raw": [None],
+                "smart_vendor_blob": ["opaque"],
+            },
+            "exception_codes": ["invalid_smart_value"],
+        },
+        id="synthetic-middle-period-layout",
+    ),
+    pytest.param(
+        {
+            "quarter": "2025Q4",
+            "archive_name": "2025-Q4-synthetic-layout.zip",
+            "members": [
+                (
+                    "Q4_2025/2025-10-01.csv",
+                    [
+                        [*BASE_HEADER, "smart_5_raw"],
+                        ["2025-10-01", "SYN-2025-A", "Recent", "Vendor", "5000", "0", "1"],
+                    ],
+                    False,
+                ),
+                (
+                    "Q4_2025/2025-12-31.csv",
+                    [
+                        [*BASE_HEADER, "smart_198_raw"],
+                        ["2025-12-31", "SYN-2025-B", "Recent", "Vendor", "5000", "0", "2"],
+                    ],
+                    False,
+                ),
+            ],
+            "expected": {
+                "smart_5_raw": [Decimal(1), None],
+                "smart_198_raw": [None, Decimal(2)],
+            },
+            "absent_rows": {"smart_5_raw": 1, "smart_198_raw": 1},
+            "exception_codes": [],
+        },
+        id="synthetic-2025-schema-drift-layout",
+    ),
+    pytest.param(
+        {
+            "quarter": "2026Q2",
+            "archive_name": "2026-Q2-through-june.zip",
+            "members": [
+                (
+                    "2026/Q2/2026-06-30.csv",
+                    [
+                        [
+                            "DATE",
+                            "SERIAL NUMBER",
+                            "MODEL",
+                            "MANUFACTURER",
+                            "CAPACITY BYTES",
+                            "FAILURE",
+                            "SMART 250 RAW",
+                        ],
+                        ["2026-06-30", "SYN-2026", "Current", "Vendor", "6000", "0", "-1"],
+                    ],
+                    False,
+                )
+            ],
+            "expected": {"smart_250_raw": [Decimal(-1)]},
+            "exception_codes": ["suspicious_negative_smart_value"],
+        },
+        id="synthetic-2026-june-boundary-layout",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", SYNTHETIC_HISTORICAL_LAYOUTS)
+def test_synthetic_historical_layout_contracts(tmp_path: Path, case: dict[str, object]) -> None:
+    encoded_members: dict[str, bytes] = {}
+    for member_name, rows, with_bom in case["members"]:
+        text = csv_text(rows)
+        encoded_members[member_name] = (("\ufeff" if with_bom else "") + text).encode("utf-8")
+    archive = write_raw_archive(tmp_path / case["archive_name"], encoded_members)
+    output = tmp_path / f"historical-{case['quarter']}"
+
+    run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter=case["quarter"],
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    data = read_drive_data(output)
+    for field_name, expected_values in case["expected"].items():
+        assert data.column(field_name).to_pylist() == expected_values
+    assert data.column("source_file").to_pylist() == sorted(encoded_members)
+
+    schema_report = read_json(output / "schema_report.json")
+    compatibility = schema_report["historical_compatibility_evidence"]
+    assert compatibility["status"] == "contract_and_synthetic_fixture_coverage_only"
+    assert compatibility["synthetic_fixtures_are_authentic_records"] is False
+    assert compatibility["outstanding_evidence"]
+    assert [member["filename"] for member in schema_report["members"]] == sorted(encoded_members)
+
+    quality = read_json(output / "quality_report.json")
+    for field_name, absent_rows in case.get("absent_rows", {}).items():
+        assert quality["smart_source_states"][field_name]["absent_column_rows"] == absent_rows
+    exception_path = output / "exceptions.parquet"
+    if case["exception_codes"]:
+        assert exception_path.is_file()
+        assert pq.read_table(exception_path).column("exception_code").to_pylist() == case[
+            "exception_codes"
+        ]
+    else:
+        assert not exception_path.exists()
