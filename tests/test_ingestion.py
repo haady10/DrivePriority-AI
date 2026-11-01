@@ -2121,3 +2121,173 @@ def test_synthetic_historical_layout_contracts(tmp_path: Path, case: dict[str, o
         ]
     else:
         assert not exception_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("quarter", "members", "expected_numeric", "expected_extensions"),
+    [
+        pytest.param(
+            "2016Q1",
+            {
+                "synthetic-a.csv": [
+                    [*BASE_HEADER, "smart_5_raw", "smart_vendor_blob"],
+                    ["2016-01-01", "SYN-A", "Model", "Vendor", "1000", "0", "1", "opaque"],
+                ]
+            },
+            ["smart_5_raw"],
+            ["smart_vendor_blob"],
+            id="synthetic-quarter-schema-a",
+        ),
+        pytest.param(
+            "2025Q4",
+            {
+                "synthetic-b1.csv": [
+                    [*BASE_HEADER, "smart_9_normalized"],
+                    ["2025-10-01", "SYN-B1", "Model", "Vendor", "2000", "0", "100"],
+                ],
+                "synthetic-b2.csv": [
+                    [*BASE_HEADER, "smart_198_raw"],
+                    ["2025-12-31", "SYN-B2", "Model", "Vendor", "2000", "0", "2"],
+                ],
+            },
+            ["smart_9_normalized", "smart_198_raw"],
+            [],
+            id="synthetic-quarter-schema-b",
+        ),
+    ],
+)
+def test_quarterly_schema_contract_uses_actual_published_parquet_schema(
+    tmp_path: Path,
+    quarter: str,
+    members: dict[str, list[list[str]]],
+    expected_numeric: list[str],
+    expected_extensions: list[str],
+) -> None:
+    archive = write_archive(tmp_path / f"{quarter}-synthetic-contract.zip", members)
+    output = tmp_path / f"{quarter}-schema-contract-output"
+    run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter=quarter,
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    data_files = sorted((output / "data").rglob("*.parquet"))
+    actual_schema = pq.ParquetFile(data_files[0]).schema_arrow
+    actual_fingerprint = hashlib.sha256(actual_schema.serialize().to_pybytes()).hexdigest()
+    assert all(
+        pq.ParquetFile(path).schema_arrow.equals(actual_schema, check_metadata=True)
+        for path in data_files
+    )
+    assert actual_schema.metadata[b"drivepriority.schema_version"] == b"1.1.0"
+    assert actual_schema.metadata[b"drivepriority.schema_contract_version"] == b"1.0.0"
+
+    schema_report = read_json(output / "schema_report.json")
+    validation = read_json(output / "validation_results.json")
+    manifest = read_json(output / "source_manifest.json")
+    contract = schema_report["schema_contract"]
+    assert contract == validation["schema_contract"] == manifest["schema_contract"]
+    assert contract["canonical_schema_fingerprint"] == actual_fingerprint
+    assert contract["schema_contract_version"] == "1.0.0"
+    assert contract["fingerprint_method"] == "sha256_arrow_schema_ipc_v1"
+    assert contract["recognized_numeric_smart_fields"] == expected_numeric
+    assert contract["unexpected_smart_extension_fields"] == expected_extensions
+    assert [field["name"] for field in contract["canonical_columns"]] == actual_schema.names
+    decimal_fields = {
+        field["name"]: (field["decimal_precision"], field["decimal_scale"])
+        for field in contract["canonical_columns"]
+        if "decimal_precision" in field
+    }
+    assert decimal_fields == {field: (38, 0) for field in expected_numeric}
+    assert contract["all_data_file_schemas_consistent"] is True
+    assert contract["matches_planned_quarterly_union"] is True
+    contract_check = next(
+        check
+        for check in validation["checks"]
+        if check["name"] == "published_quarterly_schema_contract"
+    )
+    assert contract_check["passed"] is True
+    drift = schema_report["source_column_availability_and_drift"]
+    assert drift["schema_drift_observed"] is (len(members) > 1)
+    assert len(drift["members"]) == len(members)
+
+
+def test_quarterly_schema_contract_survives_checkpoint_resume(tmp_path: Path) -> None:
+    archive = write_archive(
+        tmp_path / "synthetic-schema-resume.zip",
+        {
+            "a.csv": [
+                [*BASE_HEADER, "smart_5_raw"],
+                ["2016-01-01", "SYN-1", "Model", "Vendor", "1000", "0", "1"],
+            ],
+            "b.csv": [
+                [*BASE_HEADER, "smart_198_raw"],
+                ["2016-01-02", "SYN-2", "Model", "Vendor", "1000", "0", "2"],
+            ],
+        },
+    )
+    config = write_test_config(tmp_path, batch_rows=1)
+    output = tmp_path / "schema-resume-output"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_rows=2,
+        )
+
+    staging = tmp_path / "schema-resume-output.staging"
+    checkpoint = checkpoint_files(staging)
+    for artifact in checkpoint["artifacts"]:
+        path = staging / artifact["path"]
+        actual = hashlib.sha256(
+            pq.ParquetFile(path).schema_arrow.serialize().to_pybytes()
+        ).hexdigest()
+        assert artifact["schema_fingerprint"] == actual
+
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        resume=True,
+    )
+    assert result["status"] == "complete"
+    manifest = read_json(output / "source_manifest.json")
+    assert manifest["schema_contract"]["recognized_numeric_smart_fields"] == [
+        "smart_5_raw",
+        "smart_198_raw",
+    ]
+    assert manifest["schema_contract"]["all_data_file_schemas_consistent"] is True
+
+
+def test_completed_output_reuse_rejects_schema_contract_fingerprint_mismatch(
+    tmp_path: Path,
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "schema-contract-tamper"
+    run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+    manifest_path = output / "source_manifest.json"
+    manifest = read_json(manifest_path)
+    manifest["schema_contract"]["canonical_schema_fingerprint"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(PipelineError, match="schema contract mismatch"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )

@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import pyarrow as pa
 
-from drivepriority.data import SCHEMA_VERSION
+from drivepriority.data import SCHEMA_CONTRACT_VERSION, SCHEMA_VERSION
 
 
 REQUIRED_SOURCE_FIELDS = (
@@ -181,6 +181,7 @@ def canonical_arrow_schema(
     )
     metadata = {
         b"drivepriority.schema_version": SCHEMA_VERSION.encode("ascii"),
+        b"drivepriority.schema_contract_version": SCHEMA_CONTRACT_VERSION.encode("ascii"),
         b"drivepriority.smart_semantics": b"manufacturer-specific; no universal interpretation applied",
     }
     return pa.schema(fields, metadata=metadata)
@@ -212,7 +213,10 @@ def exception_arrow_schema() -> pa.Schema:
             pa.field("first_seen_date", pa.string()),
             pa.field("last_seen_date", pa.string()),
         ],
-        metadata={b"drivepriority.schema_version": SCHEMA_VERSION.encode("ascii")},
+        metadata={
+            b"drivepriority.schema_version": SCHEMA_VERSION.encode("ascii"),
+            b"drivepriority.schema_contract_version": SCHEMA_CONTRACT_VERSION.encode("ascii"),
+        },
     )
 
 

@@ -22,7 +22,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 
-from drivepriority.data import SCHEMA_VERSION
+from drivepriority.data import (
+    SCHEMA_CONTRACT_VERSION,
+    SCHEMA_FINGERPRINT_METHOD,
+    SCHEMA_VERSION,
+)
 from drivepriority.data.manifest import (
     output_inventory,
     pipeline_recovery_identity,
@@ -614,6 +618,130 @@ def _prepare_staging(
     return state, False
 
 
+def _arrow_schema_fingerprint(schema: pa.Schema) -> str:
+    return sha256_bytes(schema.serialize().to_pybytes())
+
+
+def _field_inventory(schema: pa.Schema) -> list[dict[str, Any]]:
+    inventory: list[dict[str, Any]] = []
+    for field in schema:
+        entry: dict[str, Any] = {
+            "name": field.name,
+            "arrow_type": str(field.type),
+            "nullable": field.nullable,
+        }
+        if pa.types.is_decimal(field.type):
+            entry["decimal_precision"] = field.type.precision
+            entry["decimal_scale"] = field.type.scale
+        inventory.append(entry)
+    return inventory
+
+
+def _published_schema_evidence(root: Path) -> tuple[dict[str, Any], pa.Schema | None]:
+    data_files = sorted((root / "data").rglob("*.parquet")) if (root / "data").exists() else []
+    schemas: list[pa.Schema] = []
+    files: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for path in data_files:
+        relative = path.relative_to(root).as_posix()
+        try:
+            parquet_file = pq.ParquetFile(path)
+            schema = parquet_file.schema_arrow
+            schemas.append(schema)
+            files.append(
+                {
+                    "path": relative,
+                    "rows": parquet_file.metadata.num_rows,
+                    "schema_fingerprint": _arrow_schema_fingerprint(schema),
+                }
+            )
+        except (OSError, pa.ArrowException) as exc:
+            errors.append(f"{relative}: {type(exc).__name__}")
+
+    canonical_schema = schemas[0] if schemas else None
+    schemas_consistent = bool(schemas) and not errors and all(
+        schema.equals(canonical_schema, check_metadata=True) for schema in schemas
+    )
+    metadata = {
+        key.decode("utf-8", errors="replace"): value.decode("utf-8", errors="replace")
+        for key, value in (canonical_schema.metadata or {}).items()
+    } if canonical_schema is not None else {}
+    evidence = {
+        "schema_contract_version": SCHEMA_CONTRACT_VERSION,
+        "fingerprint_method": SCHEMA_FINGERPRINT_METHOD,
+        "fingerprint_source": "Arrow schema read back from staged or published canonical Parquet",
+        "canonical_schema_fingerprint": (
+            _arrow_schema_fingerprint(canonical_schema)
+            if canonical_schema is not None
+            else None
+        ),
+        "canonical_columns": (
+            _field_inventory(canonical_schema) if canonical_schema is not None else []
+        ),
+        "arrow_schema_metadata": metadata,
+        "data_file_schemas": files,
+        "all_data_file_schemas_consistent": schemas_consistent,
+        "read_errors": errors,
+    }
+    return evidence, canonical_schema
+
+
+def _quarterly_schema_contract(
+    root: Path,
+    expected_schema: pa.Schema,
+    smart_columns: Sequence[str],
+    unexpected_smart_columns: Sequence[str],
+) -> dict[str, Any]:
+    evidence, actual_schema = _published_schema_evidence(root)
+    evidence.update(
+        {
+            "recognized_numeric_smart_fields": list(smart_columns),
+            "unexpected_smart_extension_fields": list(unexpected_smart_columns),
+            "matches_planned_quarterly_union": (
+                actual_schema is not None
+                and actual_schema.equals(expected_schema, check_metadata=True)
+            ),
+        }
+    )
+    return evidence
+
+
+def _verify_published_schema_contract(
+    root: Path, recorded_contract: Mapping[str, Any] | None
+) -> list[str]:
+    if not isinstance(recorded_contract, Mapping):
+        return ["missing quarterly schema contract"]
+    current, _schema = _published_schema_evidence(root)
+    errors: list[str] = []
+    for field_name in (
+        "schema_contract_version",
+        "fingerprint_method",
+        "canonical_schema_fingerprint",
+        "canonical_columns",
+        "arrow_schema_metadata",
+        "data_file_schemas",
+        "all_data_file_schemas_consistent",
+    ):
+        if recorded_contract.get(field_name) != current.get(field_name):
+            errors.append(f"quarterly schema contract mismatch: {field_name}")
+    if current["read_errors"]:
+        errors.extend(f"published schema read failure: {item}" for item in current["read_errors"])
+    if not current["all_data_file_schemas_consistent"]:
+        errors.append("published canonical Parquet schemas are inconsistent")
+    for report_name in ("schema_report.json", "validation_results.json"):
+        report_path = root / report_name
+        try:
+            report_contract = read_json(report_path).get("schema_contract")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(
+                f"cannot verify schema contract in {report_name}: {type(exc).__name__}"
+            )
+            continue
+        if report_contract != dict(recorded_contract):
+            errors.append(f"quarterly schema contract mismatch: {report_name}")
+    return errors
+
+
 def _verify_existing_output(output: Path, identity: Mapping[str, Any]) -> dict[str, Any]:
     manifest_path = output / "source_manifest.json"
     if not manifest_path.is_file():
@@ -625,6 +753,9 @@ def _verify_existing_output(output: Path, identity: Mapping[str, Any]) -> dict[s
             "and pipeline identity"
         )
     errors = verify_inventory(output, manifest.get("outputs", []))
+    errors.extend(
+        _verify_published_schema_contract(output, manifest.get("schema_contract"))
+    )
     if errors:
         raise PipelineError("Existing output verification failed: " + "; ".join(errors))
     return {"status": "verified_existing", "output": str(output), "manifest": manifest}
@@ -632,7 +763,7 @@ def _verify_existing_output(output: Path, identity: Mapping[str, Any]) -> dict[s
 
 def _parquet_schema_fingerprint(path: Path) -> str:
     schema = pq.ParquetFile(path).schema_arrow
-    return sha256_bytes(schema.serialize().to_pybytes())
+    return _arrow_schema_fingerprint(schema)
 
 
 def _checkpoint_artifacts(staging: Path, relative_paths: Sequence[str]) -> list[dict[str, Any]]:
@@ -646,8 +777,8 @@ def _checkpoint_artifacts(staging: Path, relative_paths: Sequence[str]) -> list[
                 "bytes": path.stat().st_size,
                 "sha256": sha256_file(path),
                 "rows": parquet_file.metadata.num_rows,
-                "schema_fingerprint": sha256_bytes(
-                    parquet_file.schema_arrow.serialize().to_pybytes()
+                "schema_fingerprint": _arrow_schema_fingerprint(
+                    parquet_file.schema_arrow
                 ),
             }
         )
@@ -1236,6 +1367,9 @@ def _publish_completed_staging(
     if manifest.get("status") != "complete" or manifest.get("identity") != dict(identity):
         return None
     errors = verify_inventory(staging, manifest.get("outputs", []))
+    errors.extend(
+        _verify_published_schema_contract(staging, manifest.get("schema_contract"))
+    )
     if errors:
         raise PipelineError("Completed staging verification failed: " + "; ".join(errors))
     for runtime_name in RUNTIME_NAMES:
@@ -1267,17 +1401,19 @@ def _aggregate_completed(completed: Mapping[int, Mapping[str, Any]]) -> QualityS
 
 def _schema_report(
     members: Sequence[MemberPlan],
-    output_schema: pa.Schema,
+    schema_contract: Mapping[str, Any],
     smart_columns: Sequence[str],
     unexpected_smart_columns: Sequence[str],
     stats: QualityStats,
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
-        "canonical_fields": [
-            {"name": field.name, "type": str(field.type), "nullable": field.nullable}
-            for field in output_schema
+        "schema_contract_version": SCHEMA_CONTRACT_VERSION,
+        "canonical_schema_fingerprint": schema_contract[
+            "canonical_schema_fingerprint"
         ],
+        "canonical_fields": list(schema_contract["canonical_columns"]),
+        "schema_contract": dict(schema_contract),
         "smart_numeric_contract": {
             "type": "decimal128(38, 0)",
             "minimum": str(-(10**38 - 1)),
@@ -1304,6 +1440,38 @@ def _schema_report(
             }
             for member in members
         ],
+        "source_column_availability_and_drift": {
+            "distinct_header_signatures": sorted(
+                {member.analysis.signature for member in members}
+            ),
+            "schema_drift_observed": len(
+                {member.analysis.signature for member in members}
+            ) > 1,
+            "members": [
+                {
+                    "filename": member.info.filename,
+                    "header_signature": member.analysis.signature,
+                    "recognized_numeric_smart_fields_present": list(
+                        member.analysis.smart_columns
+                    ),
+                    "recognized_numeric_smart_fields_absent_from_member": sorted(
+                        set(smart_columns) - set(member.analysis.smart_columns)
+                    ),
+                    "unexpected_smart_extension_fields_present": list(
+                        member.analysis.unexpected_smart_columns
+                    ),
+                    "unexpected_smart_extension_fields_absent_from_member": sorted(
+                        set(unexpected_smart_columns)
+                        - set(member.analysis.unexpected_smart_columns)
+                    ),
+                    "unknown_source_fields": list(member.analysis.unknown_columns),
+                    "missing_required_fields": list(
+                        member.analysis.missing_required_columns
+                    ),
+                }
+                for member in members
+            ],
+        },
         "model_smart_column_availability": {
             model: sorted(columns) for model, columns in sorted(stats.model_columns_present.items())
         },
@@ -1547,6 +1715,7 @@ def _quality_report(
 def _validation_results(
     stats: QualityStats,
     output_schema: pa.Schema,
+    schema_contract: Mapping[str, Any],
     staging: Path,
     member_count: int,
     completed_count: int,
@@ -1614,6 +1783,27 @@ def _validation_results(
             "total_counts_passed": failure_totals_reconcile,
             "daily_counts_passed": failure_daily_reconcile,
         },
+        {
+            "name": "published_quarterly_schema_contract",
+            "passed": (
+                schema_contract.get("canonical_schema_fingerprint") is not None
+                and schema_contract.get("all_data_file_schemas_consistent") is True
+                and schema_contract.get("matches_planned_quarterly_union") is True
+                and schema_contract.get("read_errors") == []
+                and schema_contract.get("arrow_schema_metadata", {}).get(
+                    "drivepriority.schema_version"
+                )
+                == SCHEMA_VERSION
+                and schema_contract.get("arrow_schema_metadata", {}).get(
+                    "drivepriority.schema_contract_version"
+                )
+                == SCHEMA_CONTRACT_VERSION
+            ),
+            "schema_contract_version": SCHEMA_CONTRACT_VERSION,
+            "canonical_schema_fingerprint": schema_contract.get(
+                "canonical_schema_fingerprint"
+            ),
+        },
     ]
     structural_pass = all(check["passed"] for check in checks)
     review_reasons = list(source_assessment.get("review_reasons", []))
@@ -1654,6 +1844,7 @@ def _validation_results(
             "requires_explicit_review": status == "requires_review",
         },
         "quality_findings_do_not_resolve_identity": True,
+        "schema_contract": dict(schema_contract),
         "reproducibility": _reproducibility_evidence(),
     }
 
@@ -1782,8 +1973,18 @@ def run_ingestion(
         completed = tracker.completed_members()
         stats = _aggregate_completed(completed)
         exception_rows = _compact_exceptions(staging, config)
+        schema_contract = _quarterly_schema_contract(
+            staging,
+            output_schema,
+            smart_columns,
+            unexpected_smart_columns,
+        )
         schema_report = _schema_report(
-            members, output_schema, smart_columns, unexpected_smart_columns, stats
+            members,
+            schema_contract,
+            smart_columns,
+            unexpected_smart_columns,
+            stats,
         )
         calendar_coverage = _calendar_coverage(
             stats,
@@ -1800,6 +2001,7 @@ def run_ingestion(
         validation = _validation_results(
             stats,
             output_schema,
+            schema_contract,
             staging,
             len(members),
             len(completed),
@@ -1816,6 +2018,7 @@ def run_ingestion(
                 "schema_version": SCHEMA_VERSION,
                 "status": "failed",
                 "identity": identity,
+                "schema_contract": schema_contract,
                 "validation": validation,
                 "completed_at": utc_now(),
             }
@@ -1855,6 +2058,7 @@ def run_ingestion(
             "schema_version": SCHEMA_VERSION,
             "status": "complete",
             "identity": identity,
+            "schema_contract": schema_contract,
             "source": {
                 "url": source_url,
                 "local_path": str(archive),

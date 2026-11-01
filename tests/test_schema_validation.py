@@ -76,6 +76,8 @@ def test_schema_union_and_decimal_contract_are_deterministic() -> None:
     assert schema.field("smart_198_raw").type == pa.decimal128(38, 0)
     assert schema.field("manufacturer").type == pa.string()
     assert schema.names[-3:] == ["source_quarter", "source_file", "schema_version"]
+    assert schema.metadata[b"drivepriority.schema_version"] == b"1.1.0"
+    assert schema.metadata[b"drivepriority.schema_contract_version"] == b"1.0.0"
     assert exception_arrow_schema().field("row_evidence_id").type == pa.string()
 
 

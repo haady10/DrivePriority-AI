@@ -113,6 +113,10 @@ Byte-for-byte equality of independently written Parquet files is not claimed. Ph
 
 `schema_report.json` records original and normalized headers, per-member schema fingerprints, source CSV token types, canonical Parquet types, SMART availability by hardware model, and unexpected SMART-shaped fields.
 
+Each quarter retains its own observed SMART-column union; ingestion does not impose a fixed global SMART schema. Schema contract `1.0.0` is calculated only after canonical Parquet parts are written and their Arrow schemas are read back. The contract records the complete canonical column inventory, nullable flags, exact Arrow types, decimal precision and scale, recognized numeric SMART fields, unexpected SMART string extensions, Arrow metadata, per-file schema fingerprints, source-column availability, and per-member schema-drift evidence. The canonical fingerprint uses method `sha256_arrow_schema_ipc_v1`, meaning SHA-256 over the serialized Arrow schema actually present in canonical Parquet, including its schema metadata.
+
+The same schema contract and fingerprint appear in `schema_report.json`, `validation_results.json`, and `source_manifest.json`. Canonical Parquet metadata includes both `drivepriority.schema_version` and `drivepriority.schema_contract_version`. Publication fails if data-file schemas disagree, differ from the planned within-quarter union, cannot be read, or carry inconsistent contract metadata. Completed-output reuse recalculates the published schema evidence, while member checkpoint recovery verifies each recorded Parquet schema fingerprint before reuse.
+
 ### Quality report
 
 `quality_report.json` separates:
@@ -185,6 +189,8 @@ Within an assigned quarter, the pipeline reports:
 The disk-backed audit retains the first source location plus first and last observation dates for collision evidence. Blank and absent manufacturer values are both treated as unavailable identity evidence, while supplied manufacturer values remain part of the signature. Original serial strings are preserved exactly. All records remain present. The pipeline does not normalize or merge serials, declare that a raw serial is a globally stable device key, or choose a winning conflicting row.
 
 The project lead performs stable identity mapping, deterministic conflict resolution, cross-quarter duplicate detection, boundary continuity checks, and drive-history integration centrally after all quarterly manifests and partitions have been verified.
+
+The later central integration stage must union verified quarterly columns by field name, insert correctly typed nulls where a field was historically absent, and reject incompatible Arrow types unless an explicit reviewed conversion is approved. It must preserve original source values, source-member provenance, quarterly contract fingerprints, and exception evidence. Quarterly outputs marked `requires_review` must be rejected from automatic admission or explicitly approved with documented evidence. Cross-quarter duplicate auditing, stable drive-identity resolution, and chronological history integration remain central responsibilities; none is performed by this quarterly pipeline.
 
 ## Interrupted runs
 
