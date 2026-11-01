@@ -201,7 +201,7 @@ The later central integration stage must union verified quarterly columns by fie
 
 If processing stops, the final output directory remains absent and the matching `.staging` directory retains transactional member checkpoints.
 
-A CSV parsing or Unicode decoding failure atomically writes `processing_failure.json` in staging and marks `run_state.json` as failed. The report records the archive SHA-256, member and processing sequence, available approximate line/byte position, sanitized exception type and description, completed-member state, and recovery requirement. Failed parser staging cannot be resumed or published; inspect the report and use an explicit `--restart`. Restart removes only the verified matching staging directory and does not touch sibling or completed outputs.
+A CSV parsing or Unicode decoding failure atomically writes `processing_failure.json` in staging and marks `run_state.json` as failed. Report version `1.1.0` records the exact attempted logical record number separately from the last successfully decoded record, labels available physical line/byte positions as approximate, and includes archive SHA-256, member and processing sequence, sanitized exception type and description, completed-member state, and recovery requirement. Failed parser staging cannot be resumed or published; inspect the report and use an explicit `--restart`. Restart removes only the verified matching staging directory and does not touch sibling or completed outputs.
 
 Resume only with the same archive SHA-256, source URL, quarter, schema version, configuration hash, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, installed Python and core dependency identity, and pipeline-scoped dirty state:
 

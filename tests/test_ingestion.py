@@ -1974,11 +1974,46 @@ def test_parser_and_decoding_failures_leave_atomic_restart_only_evidence(
     assert report["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
     assert report["source_member"]["filename"] == "bad.csv"
     assert report["exception"]["type"] == exception_type
+    assert report["report_version"] == "1.1.0"
+    assert report["position"]["last_successful_source_record_number"] is None
+    assert report["position"]["attempted_source_record_number"] == 1
+    assert report["position"]["attempted_record_number_is_exact"] is True
+    assert report["position"]["line_number_is_approximate"] is True
+    assert report["position"]["byte_position_is_approximate"] is True
     assert report["recovery"]["restart_required"] is True
     assert report["recovery"]["resume_allowed"] is False
     assert report["identity"] == read_json(staging / "run_state.json")["identity"]
     assert read_json(staging / "run_state.json")["status"] == "failed"
     assert not list(staging.glob("*.tmp"))
+
+
+def test_parser_failure_distinguishes_attempted_from_last_successful_record(
+    tmp_path: Path,
+) -> None:
+    payload = (
+        (",".join(BASE_HEADER) + "\n").encode("utf-8")
+        + b"2016-01-01,SN-1,Model,Vendor,1000,0\n"
+        + b'2016-01-02,SN-2,"unterminated,Vendor,1000,0\n'
+    )
+    archive = write_raw_archive(tmp_path / "second-record-parser-error.zip", {"bad.csv": payload})
+    output = tmp_path / "second-record-parser-error-output"
+
+    with pytest.raises(PipelineError, match="processing_failure.json"):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
+
+    position = read_json(
+        output.with_name(output.name + ".staging") / "processing_failure.json"
+    )["position"]
+    assert position["last_successful_source_record_number"] == 1
+    assert position["attempted_source_record_number"] == 2
+    assert position["rows_seen_in_run"] == 1
+    assert "source_record_number" not in position
 
 
 def test_failed_parser_run_refuses_resume_and_restart_is_scoped(tmp_path: Path) -> None:

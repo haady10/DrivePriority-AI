@@ -1288,7 +1288,8 @@ def _write_processing_failure(
     member: MemberPlan,
     member_sequence: int,
     exc: BaseException,
-    source_record_number: int | None,
+    last_successful_source_record_number: int | None,
+    attempted_source_record_number: int | None,
     source_line_number: int | None,
     approximate_byte_position: int | None,
     rows_seen: int,
@@ -1298,7 +1299,7 @@ def _write_processing_failure(
     state = read_json(state_path)
     recorded_at = utc_now()
     report = {
-        "report_version": "1.0.0",
+        "report_version": "1.1.0",
         "status": "processing_failed",
         "recorded_at": recorded_at,
         "archive_sha256": archive_sha256,
@@ -1309,9 +1310,17 @@ def _write_processing_failure(
             "processing_sequence": member_sequence,
         },
         "position": {
-            "source_record_number": source_record_number,
+            "last_successful_source_record_number": (
+                last_successful_source_record_number
+            ),
+            "attempted_source_record_number": attempted_source_record_number,
+            "attempted_record_number_is_exact": (
+                attempted_source_record_number is not None
+            ),
             "approximate_line_number": source_line_number,
+            "line_number_is_approximate": True,
             "approximate_uncompressed_byte_position": approximate_byte_position,
+            "byte_position_is_approximate": True,
             "rows_seen_in_run": rows_seen,
         },
         "exception": {
@@ -1382,6 +1391,7 @@ def _process_member(
     exception_part_number = 0
     rows_seen = rows_seen_before_member
     current_record_number: int | None = None
+    attempted_record_number: int | None = None
     current_line_number: int | None = None
     approximate_byte_position: int | None = None
     reader: Any = None
@@ -1461,16 +1471,29 @@ def _process_member(
             with source.open(member.info, "r") as binary:
                 with io.TextIOWrapper(binary, encoding=encoding, newline="") as text:
                     reader = csv.reader(text, strict=True)
+                    # Header validity was established during immutable archive inspection.
+                    # A decoding failure while this buffered read looks ahead therefore
+                    # belongs to the first attempted source record.
+                    attempted_record_number = 1
                     actual_header = next(reader)
                     if tuple(actual_header) != member.analysis.original_headers:
                         raise PipelineError(f"Header changed between inspection and processing: {member.info.filename}")
-                    for source_record_number, values in enumerate(reader, start=1):
-                        current_record_number = source_record_number
-                        current_line_number = reader.line_num
+                    next_record_number = 1
+                    while True:
+                        attempted_record_number = next_record_number
                         try:
                             approximate_byte_position = binary.tell()
                         except (OSError, ValueError):
                             approximate_byte_position = None
+                        try:
+                            values = next(reader)
+                        except StopIteration:
+                            attempted_record_number = None
+                            break
+                        source_record_number = next_record_number
+                        next_record_number += 1
+                        current_record_number = source_record_number
+                        current_line_number = reader.line_num
                         rows_seen += 1
                         stats.input_rows += 1
                         source_rows_in_batch += 1
@@ -1651,7 +1674,8 @@ def _process_member(
             member=member,
             member_sequence=member_sequence,
             exc=exc,
-            source_record_number=current_record_number,
+            last_successful_source_record_number=current_record_number,
+            attempted_source_record_number=attempted_record_number,
             source_line_number=current_line_number,
             approximate_byte_position=approximate_byte_position,
             rows_seen=rows_seen,
