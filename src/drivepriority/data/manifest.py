@@ -16,6 +16,15 @@ from drivepriority import __version__
 
 
 HASH_BLOCK_SIZE = 8 * 1024 * 1024
+PIPELINE_RUNTIME_PATHS = (
+    "src/drivepriority/__init__.py",
+    "src/drivepriority/data/__init__.py",
+    "src/drivepriority/data/ingest.py",
+    "src/drivepriority/data/manifest.py",
+    "src/drivepriority/data/schema.py",
+    "src/drivepriority/data/validate.py",
+)
+REQUIREMENTS_PATH = "requirements.txt"
 
 
 def sha256_file(path: Path) -> str:
@@ -65,7 +74,9 @@ def dependency_versions(names: Iterable[str]) -> dict[str, str]:
     return dict(sorted(versions.items()))
 
 
-def git_revision(repository: Path) -> dict[str, Any]:
+def git_revision(
+    repository: Path, *, pathspecs: Iterable[str] | None = None
+) -> dict[str, Any]:
     """Read the source revision without changing repository state."""
 
     def run(*arguments: str) -> str:
@@ -81,13 +92,53 @@ def git_revision(repository: Path) -> dict[str, Any]:
     try:
         commit = run("rev-parse", "HEAD")
         branch = run("branch", "--show-current")
-        dirty = bool(run("status", "--porcelain", "--untracked-files=normal"))
+        status_arguments = ["status", "--porcelain", "--untracked-files=all"]
+        if pathspecs is not None:
+            status_arguments.extend(["--", *pathspecs])
+        dirty = bool(run(*status_arguments))
     except (OSError, subprocess.CalledProcessError):
         return {"commit": None, "branch": None, "dirty": None}
     return {"commit": commit, "branch": branch or None, "dirty": dirty}
 
 
-def software_provenance(repository: Path) -> dict[str, Any]:
+def pipeline_recovery_identity(repository: Path) -> dict[str, Any]:
+    """Return the immutable code and environment-file identity used for recovery."""
+
+    source_inventory: list[dict[str, str]] = []
+    for relative in PIPELINE_RUNTIME_PATHS:
+        path = repository / relative
+        if not path.is_file():
+            raise FileNotFoundError(f"Required pipeline source is unavailable: {relative}")
+        source_inventory.append({"path": relative, "sha256": sha256_file(path)})
+
+    requirements = repository / REQUIREMENTS_PATH
+    if not requirements.is_file():
+        raise FileNotFoundError(
+            f"Required dependency lock file is unavailable: {REQUIREMENTS_PATH}"
+        )
+
+    scoped_revision = git_revision(
+        repository,
+        pathspecs=(*PIPELINE_RUNTIME_PATHS, REQUIREMENTS_PATH),
+    )
+    return {
+        "pipeline_version": __version__,
+        "git_commit": scoped_revision["commit"],
+        "git_metadata_available": (
+            scoped_revision["commit"] is not None
+            and scoped_revision["dirty"] is not None
+        ),
+        "runtime_source_sha256": sha256_bytes(stable_json_bytes(source_inventory)),
+        "requirements_sha256": sha256_file(requirements),
+        "pipeline_scoped_dirty": scoped_revision["dirty"],
+    }
+
+
+def software_provenance(
+    repository: Path,
+    *,
+    recovery_identity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "pipeline_version": __version__,
         "python": platform.python_version(),
@@ -95,6 +146,7 @@ def software_provenance(repository: Path) -> dict[str, Any]:
         "platform": platform.platform(),
         "dependencies": dependency_versions(("duckdb", "pyarrow", "PyYAML")),
         "git": git_revision(repository),
+        "recovery_identity": dict(recovery_identity or pipeline_recovery_identity(repository)),
     }
 
 

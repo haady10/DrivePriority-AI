@@ -24,6 +24,7 @@ import yaml
 from drivepriority.data import SCHEMA_VERSION
 from drivepriority.data.manifest import (
     output_inventory,
+    pipeline_recovery_identity,
     read_json,
     sha256_bytes,
     sha256_file,
@@ -210,23 +211,28 @@ def _state_identity(
     config_sha256: str,
     quarter: str,
     source_url: str,
-) -> dict[str, str]:
+    pipeline_identity: Mapping[str, Any],
+) -> dict[str, Any]:
     return {
         "archive_sha256": archive_sha256,
         "config_sha256": config_sha256,
         "quarter": quarter,
         "source_url": source_url,
         "schema_version": SCHEMA_VERSION,
+        "pipeline": dict(pipeline_identity),
     }
 
 
-def _validate_state(staging: Path, identity: Mapping[str, str]) -> dict[str, Any]:
+def _validate_state(staging: Path, identity: Mapping[str, Any]) -> dict[str, Any]:
     state_path = staging / "run_state.json"
     if not state_path.is_file():
         raise PipelineError("Staging directory has no verifiable run_state.json")
     state = read_json(state_path)
     if state.get("identity") != dict(identity):
-        raise PipelineError("Staging state belongs to a different archive, quarter, URL, or configuration")
+        raise PipelineError(
+            "Staging state belongs to a different archive, quarter, URL, configuration, "
+            "or pipeline identity"
+        )
     return state
 
 
@@ -242,7 +248,7 @@ def _safe_remove_tree(path: Path, boundary: Path) -> None:
 def _prepare_staging(
     output: Path,
     staging: Path,
-    identity: Mapping[str, str],
+    identity: Mapping[str, Any],
     *,
     resume: bool,
     restart: bool,
@@ -263,24 +269,106 @@ def _prepare_staging(
     return state, False
 
 
-def _verify_existing_output(output: Path, identity: Mapping[str, str]) -> dict[str, Any]:
+def _verify_existing_output(output: Path, identity: Mapping[str, Any]) -> dict[str, Any]:
     manifest_path = output / "source_manifest.json"
     if not manifest_path.is_file():
         raise PipelineError("Output exists but has no source_manifest.json; refusing overwrite")
     manifest = read_json(manifest_path)
     if manifest.get("identity") != dict(identity) or manifest.get("status") != "complete":
-        raise PipelineError("Existing output does not match this archive, quarter, URL, and configuration")
+        raise PipelineError(
+            "Existing output does not match this archive, quarter, URL, configuration, "
+            "and pipeline identity"
+        )
     errors = verify_inventory(output, manifest.get("outputs", []))
     if errors:
         raise PipelineError("Existing output verification failed: " + "; ".join(errors))
     return {"status": "verified_existing", "output": str(output), "manifest": manifest}
 
 
+def _parquet_schema_fingerprint(path: Path) -> str:
+    schema = pq.ParquetFile(path).schema_arrow
+    return sha256_bytes(schema.serialize().to_pybytes())
+
+
+def _checkpoint_artifacts(staging: Path, relative_paths: Sequence[str]) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    for relative in sorted(relative_paths):
+        path = staging / relative
+        parquet_file = pq.ParquetFile(path)
+        artifacts.append(
+            {
+                "path": relative,
+                "bytes": path.stat().st_size,
+                "sha256": sha256_file(path),
+                "rows": parquet_file.metadata.num_rows,
+                "schema_fingerprint": sha256_bytes(
+                    parquet_file.schema_arrow.serialize().to_pybytes()
+                ),
+            }
+        )
+    return artifacts
+
+
+def _verify_completed_checkpoints(
+    staging: Path, completed: Mapping[int, Mapping[str, Any]]
+) -> None:
+    errors: list[str] = []
+    resolved_staging = staging.resolve()
+    for member_index in sorted(completed):
+        files = completed[member_index].get("files", {})
+        artifacts = files.get("artifacts")
+        relative_paths = files.get("relative_paths")
+        if not isinstance(artifacts, list) or not isinstance(relative_paths, list):
+            errors.append(f"member {member_index}: missing checkpoint artifact inventory")
+            continue
+
+        artifact_paths = [str(item.get("path")) for item in artifacts if isinstance(item, dict)]
+        if sorted(artifact_paths) != sorted(str(path) for path in relative_paths):
+            errors.append(f"member {member_index}: checkpoint artifact path inventory mismatch")
+            continue
+
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                errors.append(f"member {member_index}: malformed checkpoint artifact entry")
+                continue
+            relative = str(artifact.get("path", ""))
+            candidate = (staging / relative).resolve()
+            if resolved_staging not in candidate.parents:
+                errors.append(f"member {member_index}: unsafe checkpoint path {relative}")
+                continue
+            if not candidate.is_file():
+                errors.append(f"member {member_index}: missing checkpoint artifact {relative}")
+                continue
+            try:
+                if candidate.stat().st_size != int(artifact["bytes"]):
+                    errors.append(f"member {member_index}: size mismatch for {relative}")
+                    continue
+                if sha256_file(candidate) != artifact["sha256"]:
+                    errors.append(f"member {member_index}: SHA-256 mismatch for {relative}")
+                    continue
+                parquet_file = pq.ParquetFile(candidate)
+                if parquet_file.metadata.num_rows != int(artifact["rows"]):
+                    errors.append(f"member {member_index}: row count mismatch for {relative}")
+                    continue
+                if _parquet_schema_fingerprint(candidate) != artifact["schema_fingerprint"]:
+                    errors.append(f"member {member_index}: schema mismatch for {relative}")
+            except (KeyError, TypeError, ValueError, OSError, pa.ArrowException) as exc:
+                errors.append(
+                    f"member {member_index}: invalid checkpoint metadata for {relative}: {exc}"
+                )
+
+    if errors:
+        raise PipelineError(
+            "Completed checkpoint verification failed; use --restart to replay staged work: "
+            + "; ".join(errors)
+        )
+
+
 def _cleanup_incomplete_files(staging: Path, completed: Mapping[int, Mapping[str, Any]]) -> None:
     allowed = {
         relative
         for member in completed.values()
-        for relative in member["files"].get("relative_paths", [])
+        for relative in member["files"]["relative_paths"]
     }
     for directory_name in ("data", "exception_parts"):
         directory = staging / directory_name
@@ -539,7 +627,7 @@ def _process_member(
         relative_paths = _move_member_outputs(work_member, staging, quarter)
         file_details = {
             "relative_paths": relative_paths,
-            "sha256": {path: sha256_file(staging / path) for path in relative_paths},
+            "artifacts": _checkpoint_artifacts(staging, relative_paths),
         }
         tracker.complete_member(member_sequence, stats, file_details)
         if work_member.exists():
@@ -576,7 +664,7 @@ def _compact_exceptions(staging: Path, config: Mapping[str, Any]) -> int:
 
 
 def _publish_completed_staging(
-    staging: Path, output: Path, identity: Mapping[str, str]
+    staging: Path, output: Path, identity: Mapping[str, Any]
 ) -> dict[str, Any] | None:
     """Finish an already validated staging result after a late interruption."""
 
@@ -792,12 +880,23 @@ def run_ingestion(
     start, end = quarter_bounds(quarter)
     _quarter_within_scope(config, start, end)
     archive_sha256 = sha256_file(archive)
+    repository = Path(__file__).resolve().parents[3]
+    try:
+        pipeline_identity = pipeline_recovery_identity(repository)
+    except OSError as exc:
+        raise PipelineError(f"Cannot establish pipeline recovery identity: {exc}") from exc
     members, archive_inventory = inspect_archive(archive, config)
     smart_columns, unexpected_smart_columns = union_smart_columns(
         member.analysis for member in members
     )
     output_schema = canonical_arrow_schema(smart_columns, unexpected_smart_columns)
-    identity = _state_identity(archive_sha256, config_sha256, quarter, source_url)
+    identity = _state_identity(
+        archive_sha256,
+        config_sha256,
+        quarter,
+        source_url,
+        pipeline_identity,
+    )
 
     if dry_run:
         return {
@@ -833,6 +932,7 @@ def run_ingestion(
     )
     try:
         completed = tracker.completed_members()
+        _verify_completed_checkpoints(staging, completed)
         _cleanup_incomplete_files(staging, completed)
         rows_seen = sum(int(member["stats"].get("input_rows", 0)) for member in completed.values())
         with zipfile.ZipFile(archive, "r") as source:
@@ -888,7 +988,6 @@ def run_ingestion(
             write_json_atomic(staging / "source_manifest.json", failed_manifest)
             raise ValidationError("Structural validation failed; output remains in staging")
 
-        repository = Path(__file__).resolve().parents[3]
         member_reports = []
         for sequence, member in enumerate(members):
             member_stats = QualityStats.from_dict(completed[sequence]["stats"])
@@ -941,7 +1040,10 @@ def run_ingestion(
                 "sha256": config_sha256,
                 "content": config,
             },
-            "software": software_provenance(repository),
+            "software": software_provenance(
+                repository,
+                recovery_identity=pipeline_identity,
+            ),
             "processing": {
                 "started_at": state["started_at"],
                 "completed_at": utc_now(),

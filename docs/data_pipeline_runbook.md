@@ -85,7 +85,7 @@ The non-Hive `data/2016Q1/` directory is the physical quarter partition. Every P
 
 ### Source manifest
 
-`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, member inventory, original headers, CRC results, configuration and hash, Python/dependency versions, Git revision and dirty status, row counts, output checksums, validation status, and processing timestamps.
+`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, member inventory, original headers, CRC results, configuration and hash, Python/dependency versions, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, row counts, output checksums, validation status, and processing timestamps. If Git metadata is unavailable, the commit and scoped dirty state are recorded as unknown rather than being reported as clean; the exact source and requirements hashes remain mandatory.
 
 ### Schema report
 
@@ -150,7 +150,7 @@ The project lead performs stable identity mapping, deterministic conflict resolu
 
 If processing stops, the final output directory remains absent and the matching `.staging` directory retains transactional member checkpoints.
 
-Resume only with the same archive SHA-256, source URL, quarter, schema version, and configuration hash:
+Resume only with the same archive SHA-256, source URL, quarter, schema version, configuration hash, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, and pipeline-scoped dirty state:
 
 ```powershell
 .\.venv\Scripts\python.exe -m drivepriority.data.ingest `
@@ -162,7 +162,7 @@ Resume only with the same archive SHA-256, source URL, quarter, schema version, 
     --resume
 ```
 
-Completed member transactions are reused. Incomplete member files are removed only from the verified matching staging boundary and that member is replayed from its source stream.
+Completed member transactions are reused only after every recorded Parquet artifact path, byte size, SHA-256, row count, and schema fingerprint is verified. A missing, modified, or inconsistent checkpoint stops recovery and requires an explicit `--restart`; checkpoint metadata is never recalculated to certify a damaged file. Incomplete member files are removed only from the verified matching staging boundary and that member is replayed from its source stream.
 
 Use `--restart` only when intentionally discarding a verified matching staging run. Restart refuses staging state belonging to any other archive, URL, quarter, or configuration. It never deletes an existing completed output.
 
@@ -201,7 +201,7 @@ $env:PYTHONPATH = "src"
     -q
 ```
 
-Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, exact SMART precision, blank/zero/invalid/absent states, failure flags, quarantines, malformed records, duplicate classes, source collisions, calendar coverage, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, interruption, resume, and scoped restart.
+Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, exact SMART precision, blank/zero/invalid/absent states, failure flags, quarantines, malformed records, duplicate classes, source collisions, calendar coverage, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, pipeline identity changes, checkpoint integrity, interruption, resume, and scoped restart.
 
 The existing H2O smoke test is separate. It verifies software startup with synthetic model data and is not evidence that the ingestion or research methodology is correct.
 

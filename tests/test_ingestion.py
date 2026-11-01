@@ -7,16 +7,23 @@ import json
 from pathlib import Path
 import zipfile
 
+import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import yaml
 
+from drivepriority import __version__
 from drivepriority.data.ingest import (
     IngestionInterrupted,
     PipelineError,
     load_configuration,
     run_ingestion,
+)
+from drivepriority.data.manifest import (
+    PIPELINE_RUNTIME_PATHS,
+    REQUIREMENTS_PATH,
+    pipeline_recovery_identity,
 )
 
 
@@ -102,6 +109,79 @@ def normal_archive(tmp_path: Path) -> Path:
     )
 
 
+def fake_pipeline_identity(commit: str = "a" * 40) -> dict[str, object]:
+    return {
+        "pipeline_version": __version__,
+        "git_commit": commit,
+        "git_metadata_available": True,
+        "runtime_source_sha256": "b" * 64,
+        "requirements_sha256": "c" * 64,
+        "pipeline_scoped_dirty": False,
+    }
+
+
+def write_identity_repository(tmp_path: Path) -> Path:
+    repository = tmp_path / "identity-repository"
+    for relative in PIPELINE_RUNTIME_PATHS:
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {relative}\n", encoding="utf-8")
+    requirements = repository / REQUIREMENTS_PATH
+    requirements.write_text("pyarrow==23.0.1\n", encoding="utf-8")
+    return repository
+
+
+def interrupted_checkpoint(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path, batch_rows=1)
+    output = tmp_path / "checkpoint-output"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_rows=3,
+        )
+    staging = output.with_name(output.name + ".staging")
+    return archive, config, output, staging
+
+
+def checkpoint_files(staging: Path) -> dict[str, object]:
+    connection = duckdb.connect(str(staging / "state.duckdb"))
+    try:
+        row = connection.execute(
+            "SELECT files_json FROM completed_members ORDER BY member_index LIMIT 1"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None
+    return json.loads(row[0])
+
+
+def replace_checkpoint_files(staging: Path, files: dict[str, object]) -> None:
+    connection = duckdb.connect(str(staging / "state.duckdb"))
+    try:
+        connection.execute(
+            "UPDATE completed_members SET files_json = ? WHERE member_index = 0",
+            [json.dumps(files, sort_keys=True, separators=(",", ":"))],
+        )
+    finally:
+        connection.close()
+
+
+def resume_checkpoint(archive: Path, config: Path, output: Path) -> dict[str, object]:
+    return run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        resume=True,
+    )
+
+
 def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Path) -> None:
     archive = normal_archive(tmp_path)
     result = run(tmp_path, archive)
@@ -145,7 +225,15 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     manifest = read_json(output / "source_manifest.json")
     assert manifest["source"]["url"] == SOURCE_URL
     assert manifest["source"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
-    assert manifest["software"]["pipeline_version"] == "0.1.0"
+    assert manifest["software"]["pipeline_version"] == "0.1.1"
+    assert manifest["identity"]["pipeline"] == manifest["software"]["recovery_identity"]
+    assert manifest["identity"]["pipeline"] == pipeline_recovery_identity(
+        Path(__file__).resolve().parents[1]
+    )
+    assert manifest["identity"]["pipeline"]["git_commit"]
+    assert len(manifest["identity"]["pipeline"]["runtime_source_sha256"]) == 64
+    assert len(manifest["identity"]["pipeline"]["requirements_sha256"]) == 64
+    assert isinstance(manifest["identity"]["pipeline"]["pipeline_scoped_dirty"], bool)
     assert manifest["configuration"]["sha256"]
     assert all(entry["sha256"] for entry in manifest["outputs"])
     assert manifest["central_integration_required"] is True
@@ -321,11 +409,22 @@ def test_interrupted_member_resumes_without_touching_unrelated_files(tmp_path: P
             archive=archive,
             output=output,
             source_url=SOURCE_URL,
-            _interrupt_after_rows=2,
+            _interrupt_after_rows=3,
         )
 
     assert not output.exists()
-    assert output.with_name(output.name + ".staging").is_dir()
+    staging = output.with_name(output.name + ".staging")
+    assert staging.is_dir()
+    files = checkpoint_files(staging)
+    artifacts = files["artifacts"]
+    assert artifacts
+    assert set(artifacts[0]) == {
+        "path",
+        "bytes",
+        "sha256",
+        "rows",
+        "schema_fingerprint",
+    }
     assert hashlib.sha256(sentinel.read_bytes()).hexdigest() == sentinel_hash
 
     result = run_ingestion(
@@ -358,7 +457,7 @@ def test_mismatched_resume_is_refused_and_restart_is_scoped(tmp_path: Path) -> N
             source_url=SOURCE_URL,
             _interrupt_after_rows=1,
         )
-    with pytest.raises(PipelineError, match="different archive, quarter, URL, or configuration"):
+    with pytest.raises(PipelineError, match="different archive.*pipeline identity"):
         run_ingestion(
             config_path=config,
             quarter="2016Q1",
@@ -442,6 +541,170 @@ def test_completed_rerun_verifies_instead_of_overwriting(tmp_path: Path) -> None
 
     assert result["status"] == "verified_existing"
     assert hashlib.sha256((output / "source_manifest.json").read_bytes()).hexdigest() == manifest_hash
+
+
+def test_changed_pipeline_revision_refuses_resume(tmp_path: Path, monkeypatch) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path, batch_rows=1)
+    output = tmp_path / "revision-resume"
+    first_identity = fake_pipeline_identity("1" * 40)
+    monkeypatch.setattr(
+        "drivepriority.data.ingest.pipeline_recovery_identity",
+        lambda _repository: first_identity,
+    )
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_rows=3,
+        )
+
+    monkeypatch.setattr(
+        "drivepriority.data.ingest.pipeline_recovery_identity",
+        lambda _repository: fake_pipeline_identity("2" * 40),
+    )
+    with pytest.raises(PipelineError, match="pipeline identity"):
+        resume_checkpoint(archive, config, output)
+    assert not output.exists()
+
+
+def test_changed_pipeline_revision_refuses_completed_output_reuse(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "revision-complete"
+    monkeypatch.setattr(
+        "drivepriority.data.ingest.pipeline_recovery_identity",
+        lambda _repository: fake_pipeline_identity("1" * 40),
+    )
+    run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    monkeypatch.setattr(
+        "drivepriority.data.ingest.pipeline_recovery_identity",
+        lambda _repository: fake_pipeline_identity("2" * 40),
+    )
+    with pytest.raises(PipelineError, match="pipeline identity"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
+
+
+def test_runtime_source_change_changes_recovery_identity(tmp_path: Path) -> None:
+    repository = write_identity_repository(tmp_path)
+    before = pipeline_recovery_identity(repository)
+    runtime_source = repository / PIPELINE_RUNTIME_PATHS[-1]
+    runtime_source.write_text("# changed runtime source\n", encoding="utf-8")
+    after = pipeline_recovery_identity(repository)
+
+    assert before["runtime_source_sha256"] != after["runtime_source_sha256"]
+    assert before["requirements_sha256"] == after["requirements_sha256"]
+    assert before["git_commit"] is None
+    assert before["pipeline_scoped_dirty"] is None
+    assert before["git_metadata_available"] is False
+
+
+def test_requirements_change_changes_recovery_identity(tmp_path: Path) -> None:
+    repository = write_identity_repository(tmp_path)
+    before = pipeline_recovery_identity(repository)
+    (repository / REQUIREMENTS_PATH).write_text("pyarrow==23.0.2\n", encoding="utf-8")
+    after = pipeline_recovery_identity(repository)
+
+    assert before["requirements_sha256"] != after["requirements_sha256"]
+    assert before["runtime_source_sha256"] == after["runtime_source_sha256"]
+
+
+def test_unrelated_untracked_file_does_not_change_recovery_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repository = write_identity_repository(tmp_path)
+    observed_pathspecs: list[tuple[str, ...]] = []
+
+    def fixed_revision(_repository: Path, *, pathspecs=None):
+        observed_pathspecs.append(tuple(pathspecs or ()))
+        return {"commit": "a" * 40, "branch": "test", "dirty": False}
+
+    monkeypatch.setattr("drivepriority.data.manifest.git_revision", fixed_revision)
+    before = pipeline_recovery_identity(repository)
+    unrelated = repository / "docs" / "codex_connection_test.md"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text("untracked and unrelated\n", encoding="utf-8")
+    after = pipeline_recovery_identity(repository)
+
+    assert before == after
+    assert all("docs/codex_connection_test.md" not in paths for paths in observed_pathspecs)
+
+
+def test_tampered_readable_checkpoint_is_not_recertified(tmp_path: Path) -> None:
+    archive, config, output, staging = interrupted_checkpoint(tmp_path)
+    files = checkpoint_files(staging)
+    artifact = files["artifacts"][0]
+    target = staging / artifact["path"]
+    original_sha256 = artifact["sha256"]
+    table = pq.read_table(target)
+    failure_index = table.schema.get_field_index("failure")
+    replacement = pa.array(
+        [1 if value == 0 else value for value in table.column("failure").to_pylist()],
+        type=table.schema.field("failure").type,
+    )
+    pq.write_table(table.set_column(failure_index, "failure", replacement), target)
+    artifact["bytes"] = target.stat().st_size
+    replace_checkpoint_files(staging, files)
+
+    with pytest.raises(PipelineError, match="--restart.*SHA-256 mismatch"):
+        resume_checkpoint(archive, config, output)
+    assert checkpoint_files(staging)["artifacts"][0]["sha256"] == original_sha256
+    assert not output.exists()
+
+
+def test_missing_checkpoint_artifact_requires_restart(tmp_path: Path) -> None:
+    archive, config, output, staging = interrupted_checkpoint(tmp_path)
+    files = checkpoint_files(staging)
+    target = staging / files["artifacts"][0]["path"]
+    target.unlink()
+
+    with pytest.raises(PipelineError, match="--restart.*missing checkpoint artifact"):
+        resume_checkpoint(archive, config, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("bytes", "size mismatch"),
+        ("sha256", "SHA-256 mismatch"),
+        ("schema_fingerprint", "schema mismatch"),
+        ("rows", "row count mismatch"),
+    ],
+)
+def test_inconsistent_checkpoint_metadata_requires_restart(
+    tmp_path: Path, field: str, message: str
+) -> None:
+    archive, config, output, staging = interrupted_checkpoint(tmp_path)
+    files = checkpoint_files(staging)
+    artifact = files["artifacts"][0]
+    if field in {"bytes", "rows"}:
+        artifact[field] = int(artifact[field]) + 1
+    else:
+        artifact[field] = "0" * 64
+    replace_checkpoint_files(staging, files)
+
+    with pytest.raises(PipelineError, match="--restart.*" + message):
+        resume_checkpoint(archive, config, output)
+    assert not output.exists()
 
 
 def test_validation_results_are_deterministic_for_identical_inputs(tmp_path: Path) -> None:
