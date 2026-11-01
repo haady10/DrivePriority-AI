@@ -1,3 +1,3 @@
 """Backblaze data ingestion and validation tools."""
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"

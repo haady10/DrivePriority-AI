@@ -1,5 +1,5 @@
 schema:
-  version: "1.0.0"
+  version: "1.1.0"
   allowed_start_date: "2016-01-01"
   allowed_end_date: "2026-06-30"
   # Empty CSV fields are source-missing. Other tokens are conversion errors.
@@ -9,6 +9,9 @@ schema:
 processing:
   # Rows are decoded as text and converted in bounded Arrow batches.
   batch_rows: 32768
+  # Exception evidence is flushed independently from canonical source batches.
+  exception_batch_rows: 8192
+  exception_batch_bytes: 16777216
   parquet_row_group_rows: 32768
   encoding: "utf-8-sig"
   duckdb_memory_limit: "1GB"

@@ -42,9 +42,17 @@ BASE_HEADER = [
 ]
 
 
-def write_test_config(tmp_path: Path, *, batch_rows: int = 2) -> Path:
+def write_test_config(
+    tmp_path: Path,
+    *,
+    batch_rows: int = 2,
+    exception_batch_rows: int = 8192,
+    exception_batch_bytes: int = 16777216,
+) -> Path:
     config = yaml.safe_load(CONFIG_SOURCE.read_text(encoding="utf-8"))
     config["processing"]["batch_rows"] = batch_rows
+    config["processing"]["exception_batch_rows"] = exception_batch_rows
+    config["processing"]["exception_batch_bytes"] = exception_batch_bytes
     config["processing"]["parquet_row_group_rows"] = batch_rows
     path = tmp_path / "ingestion.yaml"
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
@@ -62,6 +70,13 @@ def write_archive(path: Path, members: dict[str, list[list[str]]]) -> Path:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, rows in members.items():
             archive.writestr(name, csv_text(rows))
+    return path
+
+
+def write_raw_archive(path: Path, members: dict[str, bytes]) -> Path:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
     return path
 
 
@@ -295,7 +310,7 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     manifest = read_json(output / "source_manifest.json")
     assert manifest["source"]["url"] == SOURCE_URL
     assert manifest["source"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
-    assert manifest["software"]["pipeline_version"] == "0.1.1"
+    assert manifest["software"]["pipeline_version"] == "0.1.2"
     assert manifest["identity"]["pipeline"] == manifest["software"]["recovery_identity"]
     assert manifest["identity"]["pipeline"] == pipeline_recovery_identity(
         Path(__file__).resolve().parents[1]
@@ -1187,6 +1202,8 @@ def test_conflicting_duplicate_requires_review(tmp_path: Path) -> None:
     ("section", "field", "value"),
     [
         ("processing", "batch_rows", 0),
+        ("processing", "exception_batch_rows", 0),
+        ("processing", "exception_batch_bytes", 0),
         ("processing", "parquet_row_group_rows", 0),
         ("processing", "maximum_archive_members", None),
         ("processing", "maximum_member_uncompressed_bytes", 0),
@@ -1553,3 +1570,241 @@ def test_unexpected_smart_extension_states_are_audited_without_numeric_interpret
     contract = read_json(output / "schema_report.json")["unexpected_smart_contract"]
     assert contract["canonical_type"] == "string"
     assert "not treated as a numeric" in contract["interpretation"]
+
+
+def _wide_invalid_archive(tmp_path: Path, field_count: int = 20) -> Path:
+    smart_fields = [f"smart_{index}_raw" for index in range(1, field_count + 1)]
+    return write_archive(
+        tmp_path / "wide-invalid.zip",
+        {
+            "wide.csv": [
+                [*BASE_HEADER, *smart_fields],
+                [
+                    "2016-01-01",
+                    "SN-WIDE",
+                    "Model Wide",
+                    "Vendor",
+                    "1000",
+                    "0",
+                    *[f"invalid-{index}" for index in range(field_count)],
+                ],
+            ]
+        },
+    )
+
+
+def test_wide_invalid_row_stores_raw_evidence_once_and_links_every_field(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "wide-output"
+    run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=_wide_invalid_archive(tmp_path),
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    exceptions = pq.read_table(output / "exceptions.parquet")
+    assert exceptions.num_rows == 20
+    evidence_ids = exceptions.column("row_evidence_id").to_pylist()
+    assert len(set(evidence_ids)) == 1
+    assert evidence_ids[0] is not None and len(evidence_ids[0]) == 64
+    raw_rows = exceptions.column("raw_record_json").to_pylist()
+    assert sum(value is not None for value in raw_rows) == 1
+    assert set(exceptions.column("column_name").to_pylist()) == {
+        f"smart_{index}_raw" for index in range(1, 21)
+    }
+    assert all(exceptions.column("raw_record_sha256").to_pylist())
+
+
+def test_exception_row_limit_flushes_independently_from_source_batches(tmp_path: Path) -> None:
+    archive = _wide_invalid_archive(tmp_path, field_count=10)
+    output = tmp_path / "exception-row-batches"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=write_test_config(
+                tmp_path,
+                batch_rows=100,
+                exception_batch_rows=3,
+                exception_batch_bytes=10_000_000,
+            ),
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_before_publish=True,
+        )
+
+    parts = sorted((tmp_path / "exception-row-batches.staging" / "exception_parts").glob("*.parquet"))
+    assert len(parts) == 4
+    assert [pq.ParquetFile(path).metadata.num_rows for path in parts] == [3, 3, 3, 1]
+
+
+def test_exception_byte_limit_flushes_without_truncating_evidence(tmp_path: Path) -> None:
+    archive = _wide_invalid_archive(tmp_path, field_count=8)
+    output = tmp_path / "exception-byte-batches"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=write_test_config(
+                tmp_path,
+                batch_rows=100,
+                exception_batch_rows=1000,
+                exception_batch_bytes=700,
+            ),
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_before_publish=True,
+        )
+
+    staging = tmp_path / "exception-byte-batches.staging"
+    parts = sorted((staging / "exception_parts").glob("*.parquet"))
+    assert len(parts) > 1
+    compacted = pq.read_table(staging / "exceptions.parquet")
+    assert compacted.num_rows == 8
+    assert set(compacted.column("raw_value").to_pylist()) == {
+        f"invalid-{index}" for index in range(8)
+    }
+
+
+def test_exception_compaction_streams_parquet_batches(tmp_path: Path, monkeypatch) -> None:
+    archive = _wide_invalid_archive(tmp_path, field_count=8)
+    output = tmp_path / "streamed-exceptions"
+
+    def forbid_whole_table_read(*_args, **_kwargs):
+        raise AssertionError("whole-part read_table must not be used during compaction")
+
+    with monkeypatch.context() as context:
+        context.setattr("drivepriority.data.ingest.pq.read_table", forbid_whole_table_read)
+        run_ingestion(
+            config_path=write_test_config(
+                tmp_path, exception_batch_rows=2, exception_batch_bytes=10_000_000
+            ),
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
+
+    assert pq.read_table(output / "exceptions.parquet").num_rows == 8
+
+
+@pytest.mark.parametrize(
+    ("archive_name", "payload", "exception_type"),
+    [
+        (
+            "malformed-quoting.zip",
+            (",".join(BASE_HEADER) + "\n").encode("utf-8")
+            + b'2016-01-01,SN-1,"unterminated,Vendor,1000,0\n',
+            "Error",
+        ),
+        (
+            "invalid-utf8.zip",
+            (",".join(BASE_HEADER) + "\n").encode("utf-8")
+            + b"2016-01-01,SN-1,Model,Vendor,1000,0,\xff\n",
+            "UnicodeDecodeError",
+        ),
+    ],
+)
+def test_parser_and_decoding_failures_leave_atomic_restart_only_evidence(
+    tmp_path: Path, archive_name: str, payload: bytes, exception_type: str
+) -> None:
+    archive = write_raw_archive(tmp_path / archive_name, {"bad.csv": payload})
+    output = tmp_path / f"{archive_name}-output"
+
+    with pytest.raises(PipelineError, match="processing_failure.json"):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
+
+    staging = output.with_name(output.name + ".staging")
+    report = read_json(staging / "processing_failure.json")
+    assert not output.exists()
+    assert report["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert report["source_member"]["filename"] == "bad.csv"
+    assert report["exception"]["type"] == exception_type
+    assert report["recovery"]["restart_required"] is True
+    assert report["recovery"]["resume_allowed"] is False
+    assert report["identity"] == read_json(staging / "run_state.json")["identity"]
+    assert read_json(staging / "run_state.json")["status"] == "failed"
+    assert not list(staging.glob("*.tmp"))
+
+
+def test_failed_parser_run_refuses_resume_and_restart_is_scoped(tmp_path: Path) -> None:
+    payload = (",".join(BASE_HEADER) + "\n").encode("utf-8") + b'"unterminated\n'
+    archive = write_raw_archive(tmp_path / "restart-bad.zip", {"bad.csv": payload})
+    config = write_test_config(tmp_path)
+    output = tmp_path / "restart-output"
+    sibling = tmp_path / "unrelated.txt"
+    sibling.write_text("preserve", encoding="utf-8")
+
+    with pytest.raises(PipelineError, match="processing_failure.json"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
+    staging = tmp_path / "restart-output.staging"
+    marker = staging / "old-run-marker.txt"
+    marker.write_text("discard on explicit restart", encoding="utf-8")
+
+    with pytest.raises(PipelineError, match="use --restart"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            resume=True,
+        )
+    assert marker.exists()
+
+    with pytest.raises(PipelineError, match="processing_failure.json"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            restart=True,
+        )
+    assert not marker.exists()
+    assert sibling.read_text(encoding="utf-8") == "preserve"
+    assert (staging / "processing_failure.json").is_file()
+
+
+def test_completed_exception_outputs_resume_with_revised_evidence_schema(tmp_path: Path) -> None:
+    archive = _wide_invalid_archive(tmp_path, field_count=6)
+    config = write_test_config(tmp_path, exception_batch_rows=2)
+    output = tmp_path / "exception-resume-output"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_before_publish=True,
+        )
+
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        resume=True,
+    )
+    exceptions = pq.read_table(output / "exceptions.parquet")
+    assert result["status"] == "complete"
+    assert exceptions.num_rows == 6
+    assert sum(value is not None for value in exceptions.column("raw_record_json").to_pylist()) == 1
+    assert len(set(exceptions.column("row_evidence_id").to_pylist())) == 1

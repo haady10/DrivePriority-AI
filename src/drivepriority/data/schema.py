@@ -79,6 +79,7 @@ class ConversionIssue:
     message: str
     raw_record_json: str | None
     raw_record_sha256: str | None
+    row_evidence_id: str | None = None
     first_seen_source_file: str | None = None
     first_seen_record_number: int | None = None
     first_seen_date: str | None = None
@@ -205,6 +206,7 @@ def exception_arrow_schema() -> pa.Schema:
             pa.field("message", pa.string(), nullable=False),
             pa.field("raw_record_json", pa.string()),
             pa.field("raw_record_sha256", pa.string()),
+            pa.field("row_evidence_id", pa.string()),
             pa.field("first_seen_source_file", pa.string()),
             pa.field("first_seen_record_number", pa.uint64()),
             pa.field("first_seen_date", pa.string()),

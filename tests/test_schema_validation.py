@@ -12,6 +12,7 @@ from drivepriority.data.schema import (
     SchemaError,
     analyze_headers,
     canonical_arrow_schema,
+    exception_arrow_schema,
     parse_smart_integer,
     union_smart_columns,
 )
@@ -75,6 +76,7 @@ def test_schema_union_and_decimal_contract_are_deterministic() -> None:
     assert schema.field("smart_198_raw").type == pa.decimal128(38, 0)
     assert schema.field("manufacturer").type == pa.string()
     assert schema.names[-3:] == ["source_quarter", "source_file", "schema_version"]
+    assert exception_arrow_schema().field("row_evidence_id").type == pa.string()
 
 
 @pytest.mark.parametrize(

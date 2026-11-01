@@ -78,7 +78,7 @@ $env:PYTHONPATH = "src"
 
 Processing occurs in a sibling directory ending in `.staging`. The final output name appears only after structural validation succeeds and the staging directory is atomically renamed.
 
-The CSV reader processes bounded row batches. It does not materialize a full quarter in Pandas. DuckDB stores duplicate-tracking state on disk with the configured memory limit.
+The CSV reader processes bounded row batches. It does not materialize a full quarter in Pandas. DuckDB stores duplicate-tracking state on disk with the configured memory limit. Exception evidence has independent `exception_batch_rows` and estimated `exception_batch_bytes` limits, and final exception compaction streams Parquet record batches instead of reading whole part files into memory. A single evidence item larger than the byte target is written intact in its own batch; evidence is never sampled, truncated, or discarded.
 
 Before staging, the pipeline validates batch and Parquet row-group sizes, the selected Parquet compression codec, ZIP member/count/expansion limits, the staging suffix, mandatory integrity flags, and a free-disk-space estimate. The disk estimate is the greater of the configured fixed minimum and the archive's total uncompressed size multiplied by the configured working-space factor. Unsafe or disabled safeguards stop the run.
 
@@ -132,7 +132,7 @@ Only `passed` and `passed_with_warnings` are marked eligible for central integra
 
 ### Exception evidence
 
-`exceptions.parquet` retains the source member, record and line location, raw identifier/date evidence, original header, exact unsafe token, exception code, severity, disposition, complete raw record JSON, record SHA-256, first-seen location, and first/last observation dates for collision evidence.
+`exceptions.parquet` retains the source member, record and line location, raw identifier/date evidence, original header, exact unsafe token, exception code, severity, disposition, record SHA-256, first-seen location, and first/last observation dates for collision evidence. Schema version `1.1.0` adds `row_evidence_id`: all field exceptions from one source row carry the same stable identifier, while the complete `raw_record_json` is stored once on the first linked exception rather than repeated for every invalid SMART field. The identifier incorporates the quarter, source member, record/line location, and raw-record SHA-256, so identical records at different source locations remain separately traceable.
 
 ## Exact SMART representation
 
@@ -184,6 +184,8 @@ The project lead performs stable identity mapping, deterministic conflict resolu
 
 If processing stops, the final output directory remains absent and the matching `.staging` directory retains transactional member checkpoints.
 
+A CSV parsing or Unicode decoding failure atomically writes `processing_failure.json` in staging and marks `run_state.json` as failed. The report records the archive SHA-256, member and processing sequence, available approximate line/byte position, sanitized exception type and description, completed-member state, and recovery requirement. Failed parser staging cannot be resumed or published; inspect the report and use an explicit `--restart`. Restart removes only the verified matching staging directory and does not touch sibling or completed outputs.
+
 Resume only with the same archive SHA-256, source URL, quarter, schema version, configuration hash, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, and pipeline-scoped dirty state:
 
 ```powershell
@@ -196,7 +198,7 @@ Resume only with the same archive SHA-256, source URL, quarter, schema version, 
     --resume
 ```
 
-Completed member transactions are reused only after every recorded Parquet artifact path, byte size, SHA-256, row count, and schema fingerprint is verified. A missing, modified, or inconsistent checkpoint stops recovery and requires an explicit `--restart`; checkpoint metadata is never recalculated to certify a damaged file. Incomplete member files are removed only from the verified matching staging boundary and that member is replayed from its source stream.
+Completed member transactions are reused only after every recorded Parquet artifact path, byte size, SHA-256, row count, and schema fingerprint is verified. This includes exception parts using the linked row-evidence schema. A missing, modified, or inconsistent checkpoint stops recovery and requires an explicit `--restart`; checkpoint metadata is never recalculated to certify a damaged file. Incomplete member files are removed only from the verified matching staging boundary and that member is replayed from its source stream.
 
 Use `--restart` only when intentionally discarding a verified matching staging run. Restart refuses staging state belonging to any other archive, URL, quarter, or configuration. It never deletes an existing completed output.
 
@@ -235,7 +237,7 @@ $env:PYTHONPATH = "src"
     -q
 ```
 
-Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, required headers, empty and zero-retained archives, exact SMART precision, blank/zero/negative/invalid/absent states, unexpected SMART extension states, separated failure-flag accounting, quarantines, malformed records, same-date and cross-date collision classes across members and batches, original serial preservation, approved and unexplained calendar gaps, source-inventory provenance and mismatch handling, ordered validation outcomes, central admission, configuration safeguards, ZIP and disk limits, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, pipeline identity changes, checkpoint integrity, interruption, resume, and scoped restart.
+Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, required headers, empty and zero-retained archives, exact SMART precision, blank/zero/negative/invalid/absent states, unexpected SMART extension states, separated failure-flag accounting, quarantines, malformed records, wide invalid rows with linked single-copy raw evidence, independent row/byte exception batching, streaming exception compaction, parser and decoding failure reports, same-date and cross-date collision classes across members and batches, original serial preservation, approved and unexplained calendar gaps, source-inventory provenance and mismatch handling, ordered validation outcomes, central admission, configuration safeguards, ZIP and disk limits, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, pipeline identity changes, checkpoint integrity, interruption, resume, and scoped restart.
 
 The existing H2O smoke test is separate. It verifies software startup with synthetic model data and is not evidence that the ingestion or research methodology is correct.
 
@@ -249,6 +251,7 @@ The existing H2O smoke test is separate. It verifies software startup with synth
 - **Trusted source mismatch:** stop and escalate. Do not edit the inventory or archive merely to make the values agree.
 - **Insufficient disk space:** use an approved output volume with enough free space or revise safeguards through reviewed configuration; never disable the check silently.
 - **Invalid SMART token:** inspect the exact raw token in `exceptions.parquet`; do not round, clip, or substitute zero.
+- **CSV parser or decoding failure:** inspect the atomic staging `processing_failure.json`; correct or replace the verified source input, then use `--restart`. Do not use `--resume` or manually publish failed staging.
 - **Candidate serial collision:** preserve all records and defer identity resolution to central integration.
 - **Staging identity mismatch:** use the correct output location or matching archive/configuration; never delete unrelated staging data.
 - **Completed output mismatch:** treat it as an integrity failure and publish a separately named corrected version after review.

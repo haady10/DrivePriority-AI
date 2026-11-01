@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 import io
 import json
@@ -63,7 +63,12 @@ FINAL_REPORT_NAMES = {
     "validation_results.json",
     "exceptions.parquet",
 }
-RUNTIME_NAMES = {"run_state.json", "state.duckdb", "state.duckdb.wal"}
+RUNTIME_NAMES = {
+    "run_state.json",
+    "state.duckdb",
+    "state.duckdb.wal",
+    "processing_failure.json",
+}
 
 
 class PipelineError(RuntimeError):
@@ -241,6 +246,8 @@ def load_configuration(path: Path) -> tuple[dict[str, Any], str]:
         raise PipelineError("Configuration processing must be a mapping")
     for name in (
         "batch_rows",
+        "exception_batch_rows",
+        "exception_batch_bytes",
         "parquet_row_group_rows",
         "worker_threads",
         "maximum_archive_members",
@@ -370,9 +377,11 @@ def inspect_archive(
                 )
             try:
                 with source.open(info, "r") as binary:
-                    with io.TextIOWrapper(binary, encoding=encoding, newline="") as text:
-                        reader = csv.reader(text, strict=True)
-                        headers = next(reader)
+                    header_bytes = binary.readline()
+                    if not header_bytes:
+                        raise StopIteration
+                    header_text = header_bytes.decode(encoding)
+                    headers = next(csv.reader([header_text], strict=True))
             except StopIteration as exc:
                 raise PipelineError(f"CSV member is empty: {info.filename}") from exc
             except (UnicodeError, csv.Error, OSError) as exc:
@@ -564,6 +573,13 @@ def _prepare_staging(
         elif not resume:
             raise PipelineError("Matching staging output exists; use --resume or --restart")
         else:
+            if state.get("status") == "failed" or (
+                staging / "processing_failure.json"
+            ).exists():
+                raise PipelineError(
+                    "Staging contains a parser or decoding failure; inspect "
+                    "processing_failure.json and use --restart to replay safely"
+                )
             return state, True
     staging.mkdir(parents=True, exist_ok=False)
     state = {"identity": dict(identity), "started_at": utc_now(), "status": "processing"}
@@ -763,6 +779,101 @@ def _move_member_outputs(work_member: Path, staging: Path, quarter: str) -> list
     return sorted(relative_paths)
 
 
+def _row_evidence_id(issue: ConversionIssue) -> str | None:
+    if issue.raw_record_sha256 is None:
+        return None
+    payload = {
+        "source_quarter": issue.source_quarter,
+        "source_file": issue.source_file,
+        "source_record_number": issue.source_record_number,
+        "source_line_number": issue.source_line_number,
+        "raw_record_sha256": issue.raw_record_sha256,
+    }
+    return sha256_bytes(stable_json_bytes(payload))
+
+
+def _estimated_issue_bytes(issue: ConversionIssue) -> int:
+    """Conservatively estimate buffered Python evidence without discarding it."""
+
+    return 256 + sum(
+        len(value.encode("utf-8"))
+        for value in issue.to_dict().values()
+        if isinstance(value, str)
+    )
+
+
+def _sanitized_failure_description(exc: BaseException, limit: int = 500) -> str:
+    if isinstance(exc, UnicodeError):
+        description = (
+            f"codec={getattr(exc, 'encoding', 'unknown')}; "
+            f"start={getattr(exc, 'start', 'unknown')}; "
+            f"end={getattr(exc, 'end', 'unknown')}; "
+            f"reason={getattr(exc, 'reason', type(exc).__name__)}"
+        )
+    else:
+        description = str(exc)
+    description = " ".join(description.split())
+    if len(description) > limit:
+        description = description[: limit - 3] + "..."
+    return description or type(exc).__name__
+
+
+def _write_processing_failure(
+    staging: Path,
+    *,
+    archive_sha256: str,
+    member: MemberPlan,
+    member_sequence: int,
+    exc: BaseException,
+    source_record_number: int | None,
+    source_line_number: int | None,
+    approximate_byte_position: int | None,
+    rows_seen: int,
+    completed_member_indexes: Sequence[int],
+) -> None:
+    state_path = staging / "run_state.json"
+    state = read_json(state_path)
+    recorded_at = utc_now()
+    report = {
+        "report_version": "1.0.0",
+        "status": "processing_failed",
+        "recorded_at": recorded_at,
+        "archive_sha256": archive_sha256,
+        "identity": state.get("identity"),
+        "source_member": {
+            "filename": member.info.filename,
+            "archive_index": member.archive_index,
+            "processing_sequence": member_sequence,
+        },
+        "position": {
+            "source_record_number": source_record_number,
+            "approximate_line_number": source_line_number,
+            "approximate_uncompressed_byte_position": approximate_byte_position,
+            "rows_seen_in_run": rows_seen,
+        },
+        "exception": {
+            "type": type(exc).__name__,
+            "description": _sanitized_failure_description(exc),
+        },
+        "recovery": {
+            "state_before_failure": state.get("status"),
+            "state_after_failure": "failed",
+            "completed_member_indexes": sorted(completed_member_indexes),
+            "resume_allowed": False,
+            "restart_required": True,
+        },
+    }
+    write_json_atomic(staging / "processing_failure.json", report)
+    state.update(
+        {
+            "status": "failed",
+            "failed_at": recorded_at,
+            "failure_report": "processing_failure.json",
+        }
+    )
+    write_json_atomic(state_path, state)
+
+
 def _process_member(
     archive: Path,
     member: MemberPlan,
@@ -777,6 +888,7 @@ def _process_member(
     staging: Path,
     tracker: DuplicateTracker,
     config: Mapping[str, Any],
+    archive_sha256: str,
     interrupt_after_rows: int | None,
     rows_seen_before_member: int,
 ) -> tuple[QualityStats, list[str], int]:
@@ -788,6 +900,8 @@ def _process_member(
 
     missing_tokens = {str(value) for value in config["schema"].get("missing_tokens", [""])}
     batch_rows = int(config["processing"].get("batch_rows", 32768))
+    exception_batch_rows = int(config["processing"]["exception_batch_rows"])
+    exception_batch_bytes = int(config["processing"]["exception_batch_bytes"])
     encoding = str(config["processing"].get("encoding", "utf-8-sig"))
     exception_schema = exception_arrow_schema()
     fingerprint_fields = [
@@ -796,16 +910,64 @@ def _process_member(
     stats = QualityStats()
     pending_entries: list[tuple[Mapping[str, Any], int, int]] = []
     pending_issues: list[ConversionIssue] = []
+    pending_issue_bytes = 0
+    written_evidence_ids: set[str] = set()
     source_rows_in_batch = 0
-    part_number = 0
+    data_part_number = 0
+    exception_part_number = 0
     rows_seen = rows_seen_before_member
+    current_record_number: int | None = None
+    current_line_number: int | None = None
+    approximate_byte_position: int | None = None
+    reader: Any = None
 
-    def flush() -> None:
-        nonlocal part_number, source_rows_in_batch
+    def flush_exceptions() -> None:
+        nonlocal exception_part_number, pending_issue_bytes
+        if not pending_issues:
+            return
+        exception_table = pa.Table.from_pylist(
+            [issue.to_dict() for issue in pending_issues], schema=exception_schema
+        )
+        _write_parquet(
+            work_member
+            / "exceptions"
+            / f"part-m{member_sequence:05d}-e{exception_part_number:06d}.parquet",
+            exception_table,
+            config,
+        )
+        pending_issues.clear()
+        pending_issue_bytes = 0
+        exception_part_number += 1
+
+    def queue_issue(issue: ConversionIssue) -> None:
+        nonlocal pending_issue_bytes
+        evidence_id = issue.row_evidence_id or _row_evidence_id(issue)
+        issue = replace(issue, row_evidence_id=evidence_id)
+        if evidence_id is not None and issue.raw_record_json is not None:
+            if evidence_id in written_evidence_ids:
+                issue = replace(issue, raw_record_json=None)
+            else:
+                written_evidence_ids.add(evidence_id)
+        estimated_bytes = _estimated_issue_bytes(issue)
+        if pending_issues and (
+            len(pending_issues) >= exception_batch_rows
+            or pending_issue_bytes + estimated_bytes > exception_batch_bytes
+        ):
+            flush_exceptions()
+        pending_issues.append(issue)
+        pending_issue_bytes += estimated_bytes
+        if (
+            len(pending_issues) >= exception_batch_rows
+            or pending_issue_bytes >= exception_batch_bytes
+        ):
+            flush_exceptions()
+
+    def flush_data() -> None:
+        nonlocal data_part_number, source_rows_in_batch
         duplicate_issues = tracker.classify(pending_entries, fingerprint_fields)
         for issue in duplicate_issues:
             stats.record_issue(issue)
-        pending_issues.extend(duplicate_issues)
+            queue_issue(issue)
 
         if pending_entries:
             table = pa.Table.from_pylist(
@@ -816,23 +978,16 @@ def _process_member(
                 schema=output_schema,
             )
             _write_parquet(
-                work_member / "data" / f"part-m{member_sequence:05d}-b{part_number:06d}.parquet",
+                work_member
+                / "data"
+                / f"part-m{member_sequence:05d}-b{data_part_number:06d}.parquet",
                 table,
                 config,
             )
-        if pending_issues:
-            exception_table = pa.Table.from_pylist(
-                [issue.to_dict() for issue in pending_issues], schema=exception_schema
-            )
-            _write_parquet(
-                work_member / "exceptions" / f"part-m{member_sequence:05d}-b{part_number:06d}.parquet",
-                exception_table,
-                config,
-            )
         pending_entries.clear()
-        pending_issues.clear()
+        written_evidence_ids.clear()
         source_rows_in_batch = 0
-        part_number += 1
+        data_part_number += 1
 
     tracker.begin_member()
     try:
@@ -844,6 +999,12 @@ def _process_member(
                     if tuple(actual_header) != member.analysis.original_headers:
                         raise PipelineError(f"Header changed between inspection and processing: {member.info.filename}")
                     for source_record_number, values in enumerate(reader, start=1):
+                        current_record_number = source_record_number
+                        current_line_number = reader.line_num
+                        try:
+                            approximate_byte_position = binary.tell()
+                        except (OSError, ValueError):
+                            approximate_byte_position = None
                         rows_seen += 1
                         stats.input_rows += 1
                         source_rows_in_batch += 1
@@ -858,7 +1019,7 @@ def _process_member(
                                 record_number=source_record_number,
                                 line_number=reader.line_num,
                             )
-                            pending_issues.append(issue)
+                            queue_issue(issue)
                             stats.record_issue(issue)
                             stats.malformed_rows += 1
                             stats.quarantined_rows += 1
@@ -933,7 +1094,7 @@ def _process_member(
                                 )
                             for issue in issues:
                                 stats.record_issue(issue)
-                            pending_issues.extend(issues)
+                                queue_issue(issue)
                             if row is None:
                                 stats.quarantined_rows += 1
                                 if source_flag is not None:
@@ -970,9 +1131,10 @@ def _process_member(
                                 pending_entries.append((row, source_record_number, reader.line_num))
 
                         if source_rows_in_batch >= batch_rows:
-                            flush()
-        if source_rows_in_batch or pending_entries or pending_issues:
-            flush()
+                            flush_data()
+        if source_rows_in_batch or pending_entries:
+            flush_data()
+        flush_exceptions()
 
         absent = set(smart_columns) - set(member.analysis.smart_columns)
         for field_name in absent:
@@ -987,10 +1149,25 @@ def _process_member(
         if work_member.exists():
             _safe_remove_tree(work_member, staging)
         return stats, relative_paths, rows_seen
-    except csv.Error as exc:
+    except (csv.Error, UnicodeError) as exc:
         tracker.rollback_member()
+        if reader is not None:
+            current_line_number = getattr(reader, "line_num", current_line_number)
+        _write_processing_failure(
+            staging,
+            archive_sha256=archive_sha256,
+            member=member,
+            member_sequence=member_sequence,
+            exc=exc,
+            source_record_number=current_record_number,
+            source_line_number=current_line_number,
+            approximate_byte_position=approximate_byte_position,
+            rows_seen=rows_seen,
+            completed_member_indexes=list(tracker.completed_members()),
+        )
         raise PipelineError(
-            f"CSV parser failed in {member.info.filename} near physical line {getattr(reader, 'line_num', '?')}: {exc}"
+            f"CSV parser or decoding failed in {member.info.filename}; inspect "
+            "processing_failure.json and use --restart"
         ) from exc
     except Exception:
         tracker.rollback_member()
@@ -1009,9 +1186,12 @@ def _compact_exceptions(staging: Path, config: Mapping[str, Any]) -> int:
     rows = 0
     try:
         for part in parts:
-            table = pq.read_table(part)
-            writer.write_table(table)
-            rows += table.num_rows
+            parquet_file = pq.ParquetFile(part)
+            for batch in parquet_file.iter_batches(
+                batch_size=int(config["processing"]["exception_batch_rows"])
+            ):
+                writer.write_batch(batch)
+                rows += batch.num_rows
     finally:
         writer.close()
     return rows
@@ -1549,6 +1729,7 @@ def run_ingestion(
                 staging=staging,
                 tracker=tracker,
                 config=config,
+                archive_sha256=archive_sha256,
                 interrupt_after_rows=_interrupt_after_rows,
                 rows_seen_before_member=rows_seen,
             )
