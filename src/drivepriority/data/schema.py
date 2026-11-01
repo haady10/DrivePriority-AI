@@ -81,6 +81,8 @@ class ConversionIssue:
     raw_record_sha256: str | None
     first_seen_source_file: str | None = None
     first_seen_record_number: int | None = None
+    first_seen_date: str | None = None
+    last_seen_date: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -205,6 +207,8 @@ def exception_arrow_schema() -> pa.Schema:
             pa.field("raw_record_sha256", pa.string()),
             pa.field("first_seen_source_file", pa.string()),
             pa.field("first_seen_record_number", pa.uint64()),
+            pa.field("first_seen_date", pa.string()),
+            pa.field("last_seen_date", pa.string()),
         ],
         metadata={b"drivepriority.schema_version": SCHEMA_VERSION.encode("ascii")},
     )

@@ -46,6 +46,14 @@ class QualityStats:
     smart_blank_by_field: dict[str, int] = field(default_factory=dict)
     smart_invalid_by_field: dict[str, int] = field(default_factory=dict)
     smart_zero_by_field: dict[str, int] = field(default_factory=dict)
+    smart_negative_by_field: dict[str, int] = field(default_factory=dict)
+    smart_negative_by_quarter: dict[str, dict[str, int]] = field(default_factory=dict)
+    smart_negative_by_member: dict[str, dict[str, int]] = field(default_factory=dict)
+    smart_negative_by_model: dict[str, dict[str, int]] = field(default_factory=dict)
+    extension_state_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    extension_states_by_quarter: dict[str, dict[str, dict[str, int]]] = field(default_factory=dict)
+    extension_states_by_member: dict[str, dict[str, dict[str, int]]] = field(default_factory=dict)
+    extension_states_by_model: dict[str, dict[str, dict[str, int]]] = field(default_factory=dict)
     issue_codes: dict[str, int] = field(default_factory=dict)
     issue_severity_counts: dict[str, int] = field(default_factory=dict)
     issues_by_field: dict[str, int] = field(default_factory=dict)
@@ -55,6 +63,11 @@ class QualityStats:
     daily_source_rows: dict[str, int] = field(default_factory=dict)
     daily_failure_flags: dict[str, int] = field(default_factory=dict)
     failure_flag_counts: dict[str, int] = field(default_factory=dict)
+    retained_failure_flag_counts: dict[str, int] = field(default_factory=dict)
+    quarantined_failure_flag_counts: dict[str, int] = field(default_factory=dict)
+    daily_source_failure_flag_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    daily_retained_failure_flag_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    daily_quarantined_failure_flag_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     date_min: str | None = None
     date_max: str | None = None
 
@@ -76,11 +89,94 @@ class QualityStats:
                 self.smart_invalid_by_field.get(issue.column_name, 0) + 1
             )
 
-    def record_smart_state(self, field_name: str, state: str) -> None:
+    @staticmethod
+    def _increment_nested(
+        target: dict[str, dict[str, int]], outer: str, inner: str, amount: int = 1
+    ) -> None:
+        counts = target.setdefault(outer, {})
+        counts[inner] = counts.get(inner, 0) + amount
+
+    @staticmethod
+    def _increment_state_dimension(
+        target: dict[str, dict[str, dict[str, int]]],
+        dimension: str,
+        field_name: str,
+        state: str,
+    ) -> None:
+        states = target.setdefault(dimension, {}).setdefault(field_name, {})
+        states[state] = states.get(state, 0) + 1
+
+    def record_smart_state(
+        self,
+        field_name: str,
+        state: str,
+        *,
+        source_quarter: str | None = None,
+        source_file: str | None = None,
+        model: str | None = None,
+    ) -> None:
         if state == "blank":
             self.smart_blank_by_field[field_name] = self.smart_blank_by_field.get(field_name, 0) + 1
         elif state == "zero":
             self.smart_zero_by_field[field_name] = self.smart_zero_by_field.get(field_name, 0) + 1
+        elif state == "negative":
+            self.smart_negative_by_field[field_name] = (
+                self.smart_negative_by_field.get(field_name, 0) + 1
+            )
+            if source_quarter is not None:
+                self._increment_nested(
+                    self.smart_negative_by_quarter, source_quarter, field_name
+                )
+            if source_file is not None:
+                self._increment_nested(self.smart_negative_by_member, source_file, field_name)
+            if model is not None:
+                self._increment_nested(self.smart_negative_by_model, model, field_name)
+
+    def record_extension_state(
+        self,
+        field_name: str,
+        state: str,
+        *,
+        source_quarter: str,
+        source_file: str,
+        model: str,
+    ) -> None:
+        states = self.extension_state_counts.setdefault(field_name, {})
+        states[state] = states.get(state, 0) + 1
+        self._increment_state_dimension(
+            self.extension_states_by_quarter, source_quarter, field_name, state
+        )
+        self._increment_state_dimension(
+            self.extension_states_by_member, source_file, field_name, state
+        )
+        self._increment_state_dimension(
+            self.extension_states_by_model, model, field_name, state
+        )
+
+    def record_failure_flag(
+        self,
+        flag: str,
+        observation_date: date | None,
+        *,
+        disposition: str,
+    ) -> None:
+        if disposition == "source":
+            counts = self.failure_flag_counts
+            daily = self.daily_source_failure_flag_counts
+        elif disposition == "retained":
+            counts = self.retained_failure_flag_counts
+            daily = self.daily_retained_failure_flag_counts
+        elif disposition == "quarantined":
+            counts = self.quarantined_failure_flag_counts
+            daily = self.daily_quarantined_failure_flag_counts
+        else:
+            raise ValueError(f"Unknown failure-flag disposition: {disposition}")
+        counts[flag] = counts.get(flag, 0) + 1
+        if observation_date is not None:
+            self._increment_nested(daily, observation_date.isoformat(), flag)
+        if disposition == "source" and flag == "1" and observation_date is not None:
+            key = observation_date.isoformat()
+            self.daily_failure_flags[key] = self.daily_failure_flags.get(key, 0) + 1
 
     def observe_output(self, row: Mapping[str, Any], member_smart_columns: Sequence[str]) -> None:
         self.output_rows += 1
@@ -125,6 +221,7 @@ class QualityStats:
             "smart_blank_by_field",
             "smart_invalid_by_field",
             "smart_zero_by_field",
+            "smart_negative_by_field",
             "issue_codes",
             "issue_severity_counts",
             "issues_by_field",
@@ -132,8 +229,35 @@ class QualityStats:
             "daily_source_rows",
             "daily_failure_flags",
             "failure_flag_counts",
+            "retained_failure_flag_counts",
+            "quarantined_failure_flag_counts",
         ):
             self._merge_counts(getattr(self, target_name), getattr(other, target_name))
+        for target_name in (
+            "smart_negative_by_quarter",
+            "smart_negative_by_member",
+            "smart_negative_by_model",
+            "daily_source_failure_flag_counts",
+            "daily_retained_failure_flag_counts",
+            "daily_quarantined_failure_flag_counts",
+        ):
+            target = getattr(self, target_name)
+            for outer, counts in getattr(other, target_name).items():
+                self._merge_counts(target.setdefault(outer, {}), counts)
+        for target_name in (
+            "extension_states_by_quarter",
+            "extension_states_by_member",
+            "extension_states_by_model",
+        ):
+            target = getattr(self, target_name)
+            for dimension, fields in getattr(other, target_name).items():
+                for field_name, states in fields.items():
+                    self._merge_counts(
+                        target.setdefault(dimension, {}).setdefault(field_name, {}),
+                        states,
+                    )
+        for field_name, states in other.extension_state_counts.items():
+            self._merge_counts(self.extension_state_counts.setdefault(field_name, {}), states)
         for model, counts in other.model_smart_non_null.items():
             self._merge_counts(self.model_smart_non_null.setdefault(model, {}), counts)
         for model, columns in other.model_columns_present.items():
@@ -158,6 +282,20 @@ class QualityStats:
             "smart_blank_by_field": dict(sorted(self.smart_blank_by_field.items())),
             "smart_invalid_by_field": dict(sorted(self.smart_invalid_by_field.items())),
             "smart_zero_by_field": dict(sorted(self.smart_zero_by_field.items())),
+            "smart_negative_by_field": dict(sorted(self.smart_negative_by_field.items())),
+            "smart_negative_by_quarter": self._sorted_nested(self.smart_negative_by_quarter),
+            "smart_negative_by_member": self._sorted_nested(self.smart_negative_by_member),
+            "smart_negative_by_model": self._sorted_nested(self.smart_negative_by_model),
+            "extension_state_counts": self._sorted_nested(self.extension_state_counts),
+            "extension_states_by_quarter": self._sorted_state_dimensions(
+                self.extension_states_by_quarter
+            ),
+            "extension_states_by_member": self._sorted_state_dimensions(
+                self.extension_states_by_member
+            ),
+            "extension_states_by_model": self._sorted_state_dimensions(
+                self.extension_states_by_model
+            ),
             "issue_codes": dict(sorted(self.issue_codes.items())),
             "issue_severity_counts": dict(sorted(self.issue_severity_counts.items())),
             "issues_by_field": dict(sorted(self.issues_by_field.items())),
@@ -172,6 +310,21 @@ class QualityStats:
             "daily_source_rows": dict(sorted(self.daily_source_rows.items())),
             "daily_failure_flags": dict(sorted(self.daily_failure_flags.items())),
             "failure_flag_counts": dict(sorted(self.failure_flag_counts.items())),
+            "retained_failure_flag_counts": dict(
+                sorted(self.retained_failure_flag_counts.items())
+            ),
+            "quarantined_failure_flag_counts": dict(
+                sorted(self.quarantined_failure_flag_counts.items())
+            ),
+            "daily_source_failure_flag_counts": self._sorted_nested(
+                self.daily_source_failure_flag_counts
+            ),
+            "daily_retained_failure_flag_counts": self._sorted_nested(
+                self.daily_retained_failure_flag_counts
+            ),
+            "daily_quarantined_failure_flag_counts": self._sorted_nested(
+                self.daily_quarantined_failure_flag_counts
+            ),
             "date_min": self.date_min,
             "date_max": self.date_max,
         }
@@ -192,6 +345,32 @@ class QualityStats:
             smart_blank_by_field=dict(payload.get("smart_blank_by_field", {})),
             smart_invalid_by_field=dict(payload.get("smart_invalid_by_field", {})),
             smart_zero_by_field=dict(payload.get("smart_zero_by_field", {})),
+            smart_negative_by_field=dict(payload.get("smart_negative_by_field", {})),
+            smart_negative_by_quarter={
+                key: dict(values)
+                for key, values in payload.get("smart_negative_by_quarter", {}).items()
+            },
+            smart_negative_by_member={
+                key: dict(values)
+                for key, values in payload.get("smart_negative_by_member", {}).items()
+            },
+            smart_negative_by_model={
+                key: dict(values)
+                for key, values in payload.get("smart_negative_by_model", {}).items()
+            },
+            extension_state_counts={
+                key: dict(values)
+                for key, values in payload.get("extension_state_counts", {}).items()
+            },
+            extension_states_by_quarter=cls._load_state_dimensions(
+                payload.get("extension_states_by_quarter", {})
+            ),
+            extension_states_by_member=cls._load_state_dimensions(
+                payload.get("extension_states_by_member", {})
+            ),
+            extension_states_by_model=cls._load_state_dimensions(
+                payload.get("extension_states_by_model", {})
+            ),
             issue_codes=dict(payload.get("issue_codes", {})),
             issue_severity_counts=dict(payload.get("issue_severity_counts", {})),
             issues_by_field=dict(payload.get("issues_by_field", {})),
@@ -205,10 +384,62 @@ class QualityStats:
             daily_source_rows=dict(payload.get("daily_source_rows", {})),
             daily_failure_flags=dict(payload.get("daily_failure_flags", {})),
             failure_flag_counts=dict(payload.get("failure_flag_counts", {})),
+            retained_failure_flag_counts=dict(
+                payload.get("retained_failure_flag_counts", {})
+            ),
+            quarantined_failure_flag_counts=dict(
+                payload.get("quarantined_failure_flag_counts", {})
+            ),
+            daily_source_failure_flag_counts={
+                key: dict(values)
+                for key, values in payload.get("daily_source_failure_flag_counts", {}).items()
+            },
+            daily_retained_failure_flag_counts={
+                key: dict(values)
+                for key, values in payload.get("daily_retained_failure_flag_counts", {}).items()
+            },
+            daily_quarantined_failure_flag_counts={
+                key: dict(values)
+                for key, values in payload.get(
+                    "daily_quarantined_failure_flag_counts", {}
+                ).items()
+            },
             date_min=payload.get("date_min"),
             date_max=payload.get("date_max"),
         )
         return instance
+
+    @staticmethod
+    def _sorted_nested(
+        payload: Mapping[str, Mapping[str, int]]
+    ) -> dict[str, dict[str, int]]:
+        return {
+            outer: dict(sorted(counts.items()))
+            for outer, counts in sorted(payload.items())
+        }
+
+    @staticmethod
+    def _sorted_state_dimensions(
+        payload: Mapping[str, Mapping[str, Mapping[str, int]]]
+    ) -> dict[str, dict[str, dict[str, int]]]:
+        return {
+            dimension: {
+                field_name: dict(sorted(states.items()))
+                for field_name, states in sorted(fields.items())
+            }
+            for dimension, fields in sorted(payload.items())
+        }
+
+    @staticmethod
+    def _load_state_dimensions(
+        payload: Mapping[str, Mapping[str, Mapping[str, int]]]
+    ) -> dict[str, dict[str, dict[str, int]]]:
+        return {
+            dimension: {
+                field_name: dict(states) for field_name, states in fields.items()
+            }
+            for dimension, fields in payload.items()
+        }
 
 
 def _is_missing(token: str | None, missing_tokens: set[str]) -> bool:
@@ -355,7 +586,19 @@ def convert_record(
             continue
         try:
             converted_smart[name] = parse_smart_integer(value_token or "")
-            smart_states[name] = "zero" if converted_smart[name] == 0 else "value"
+            if converted_smart[name] == 0:
+                smart_states[name] = "zero"
+            elif converted_smart[name] < 0:
+                smart_states[name] = "negative"
+                add_issue(
+                    "suspicious_negative_smart_value",
+                    name,
+                    value_token,
+                    "Negative SMART value is preserved exactly but requires scientific review",
+                    severity="warning",
+                )
+            else:
+                smart_states[name] = "value"
         except (ValueError, OverflowError) as exc:
             converted_smart[name] = None
             smart_states[name] = "invalid"
@@ -364,7 +607,12 @@ def convert_record(
     string_extensions: dict[str, str | None] = {}
     for name in analysis.unexpected_smart_columns:
         value_token = token(name)
-        string_extensions[name] = None if _is_missing(value_token, missing_tokens) else value_token
+        if _is_missing(value_token, missing_tokens):
+            string_extensions[name] = None
+            smart_states[name] = "blank"
+        else:
+            string_extensions[name] = value_token
+            smart_states[name] = "zero" if value_token and value_token.strip() == "0" else "value"
 
     disposition = "quarantined" if critical else "retained"
     issues = [
@@ -435,6 +683,19 @@ class DuplicateTracker:
                 source_file VARCHAR NOT NULL,
                 source_record_number UBIGINT NOT NULL,
                 PRIMARY KEY (observation_date, serial_number)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS serial_identities (
+                serial_number VARCHAR NOT NULL,
+                identity_signature VARCHAR NOT NULL,
+                first_observation_date DATE NOT NULL,
+                last_observation_date DATE NOT NULL,
+                first_source_file VARCHAR NOT NULL,
+                first_source_record_number UBIGINT NOT NULL,
+                PRIMARY KEY (serial_number, identity_signature)
             )
             """
         )
@@ -551,6 +812,50 @@ class DuplicateTracker:
                 """
             ).fetchall()
 
+            identity_collision_rows = self.connection.execute(
+                """
+                WITH candidates AS (
+                    SELECT batch.batch_ordinal,
+                           history.first_observation_date AS first_seen_date,
+                           history.last_observation_date AS last_seen_date,
+                           history.first_source_file,
+                           history.first_source_record_number
+                    FROM _drivepriority_batch AS batch
+                    JOIN serial_identities AS history
+                      ON history.serial_number = batch.serial_number
+                     AND history.identity_signature <> batch.identity_signature
+                    UNION ALL
+                    SELECT current.batch_ordinal,
+                           prior.observation_date AS first_seen_date,
+                           prior.observation_date AS last_seen_date,
+                           prior.source_file AS first_source_file,
+                           prior.source_record_number AS first_source_record_number
+                    FROM _drivepriority_batch AS current
+                    JOIN _drivepriority_batch AS prior
+                      ON prior.serial_number = current.serial_number
+                     AND prior.identity_signature <> current.identity_signature
+                     AND prior.batch_ordinal < current.batch_ordinal
+                ), ranked AS (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY batch_ordinal
+                        ORDER BY first_seen_date, first_source_file,
+                                 first_source_record_number
+                    ) AS first_rank
+                    FROM candidates
+                )
+                SELECT batch_ordinal,
+                       min(first_seen_date) AS first_seen_date,
+                       max(last_seen_date) AS last_seen_date,
+                       max(CASE WHEN first_rank = 1 THEN first_source_file END)
+                           AS first_source_file,
+                       max(CASE WHEN first_rank = 1 THEN first_source_record_number END)
+                           AS first_source_record_number
+                FROM ranked
+                GROUP BY batch_ordinal
+                ORDER BY batch_ordinal
+                """
+            ).fetchall()
+
             self.connection.execute(
                 """
                 INSERT INTO seen_records
@@ -571,50 +876,134 @@ class DuplicateTracker:
                   )
                 """
             )
+
+            self.connection.execute(
+                """
+                INSERT INTO serial_identities
+                WITH ranked AS (
+                    SELECT *,
+                        row_number() OVER (
+                            PARTITION BY serial_number, identity_signature
+                            ORDER BY observation_date, batch_ordinal
+                        ) AS first_rank,
+                        min(observation_date) OVER (
+                            PARTITION BY serial_number, identity_signature
+                        ) AS first_observation_date,
+                        max(observation_date) OVER (
+                            PARTITION BY serial_number, identity_signature
+                        ) AS last_observation_date
+                    FROM _drivepriority_batch
+                )
+                SELECT serial_number, identity_signature,
+                       first_observation_date, last_observation_date,
+                       max(CASE WHEN first_rank = 1 THEN source_file END),
+                       max(CASE WHEN first_rank = 1 THEN source_record_number END)
+                FROM ranked
+                GROUP BY serial_number, identity_signature,
+                         first_observation_date, last_observation_date
+                ON CONFLICT (serial_number, identity_signature) DO UPDATE SET
+                    first_source_file = CASE
+                        WHEN excluded.first_observation_date < serial_identities.first_observation_date
+                        THEN excluded.first_source_file
+                        ELSE serial_identities.first_source_file
+                    END,
+                    first_source_record_number = CASE
+                        WHEN excluded.first_observation_date < serial_identities.first_observation_date
+                        THEN excluded.first_source_record_number
+                        ELSE serial_identities.first_source_record_number
+                    END,
+                    first_observation_date = least(
+                        serial_identities.first_observation_date,
+                        excluded.first_observation_date
+                    ),
+                    last_observation_date = greatest(
+                        serial_identities.last_observation_date,
+                        excluded.last_observation_date
+                    )
+                """
+            )
         finally:
             self.connection.unregister("_drivepriority_batch")
 
+        duplicate_by_ordinal = {
+            int(ordinal): (prior_fingerprint, prior_identity, prior_file, int(prior_record))
+            for ordinal, prior_fingerprint, prior_identity, prior_file, prior_record in duplicate_rows
+        }
+        collision_by_ordinal = {
+            int(ordinal): (first_date, last_date, first_file, int(first_record))
+            for ordinal, first_date, last_date, first_file, first_record in identity_collision_rows
+        }
         issues: list[ConversionIssue] = []
-        for ordinal, prior_fingerprint, prior_identity, prior_file, prior_record in duplicate_rows:
-            row, record_number, line_number = entries[int(ordinal)]
-            exact = fingerprints[int(ordinal)] == prior_fingerprint
-            identity_collision = identity_signatures[int(ordinal)] != prior_identity
-            if exact:
-                code = "exact_duplicate"
-                severity = "warning"
-                message = "Drive-date record exactly duplicates the first observed record"
-            elif identity_collision:
-                code = "serial_identity_collision"
-                severity = "error"
-                message = (
-                    "The same date and raw serial occur with different model, manufacturer, or capacity; "
-                    "final device identity must be resolved centrally"
-                )
-            else:
-                code = "conflicting_duplicate"
-                severity = "error"
-                message = "Drive-date measurements conflict with the first observed record"
-            issues.append(
-                ConversionIssue(
-                    source_quarter=quarters[int(ordinal)],
-                    source_file=source_files[int(ordinal)],
-                    source_record_number=record_number,
-                    source_line_number=line_number,
-                    serial_number=serials[int(ordinal)],
-                    date_token=dates[int(ordinal)].isoformat(),
-                    column_name=None,
-                    original_header=None,
-                    raw_value=None,
-                    exception_code=code,
-                    severity=severity,
-                    row_disposition="retained",
-                    message=message,
-                    raw_record_json=payloads[int(ordinal)],
-                    raw_record_sha256=fingerprints[int(ordinal)],
-                    first_seen_source_file=prior_file,
-                    first_seen_record_number=int(prior_record),
-                )
+        for ordinal in sorted(set(duplicate_by_ordinal) | set(collision_by_ordinal)):
+            row, record_number, line_number = entries[ordinal]
+            current_date = dates[ordinal]
+            duplicate = duplicate_by_ordinal.get(ordinal)
+            duplicate_identity_collision = bool(
+                duplicate and identity_signatures[ordinal] != duplicate[1]
             )
+            if duplicate and not duplicate_identity_collision:
+                prior_fingerprint, _prior_identity, prior_file, prior_record = duplicate
+                exact = fingerprints[ordinal] == prior_fingerprint
+                issues.append(
+                    ConversionIssue(
+                        source_quarter=quarters[ordinal],
+                        source_file=source_files[ordinal],
+                        source_record_number=record_number,
+                        source_line_number=line_number,
+                        serial_number=serials[ordinal],
+                        date_token=current_date.isoformat(),
+                        column_name=None,
+                        original_header=None,
+                        raw_value=None,
+                        exception_code=(
+                            "exact_duplicate" if exact else "conflicting_duplicate"
+                        ),
+                        severity="warning" if exact else "error",
+                        row_disposition="retained",
+                        message=(
+                            "Drive-date record exactly duplicates the first observed record"
+                            if exact
+                            else "Drive-date measurements conflict with the first observed record"
+                        ),
+                        raw_record_json=payloads[ordinal],
+                        raw_record_sha256=fingerprints[ordinal],
+                        first_seen_source_file=prior_file,
+                        first_seen_record_number=prior_record,
+                        first_seen_date=current_date.isoformat(),
+                        last_seen_date=current_date.isoformat(),
+                    )
+                )
+
+            collision = collision_by_ordinal.get(ordinal)
+            if collision:
+                first_date, prior_last_date, first_file, first_record = collision
+                issues.append(
+                    ConversionIssue(
+                        source_quarter=quarters[ordinal],
+                        source_file=source_files[ordinal],
+                        source_record_number=record_number,
+                        source_line_number=line_number,
+                        serial_number=serials[ordinal],
+                        date_token=current_date.isoformat(),
+                        column_name=None,
+                        original_header=None,
+                        raw_value=None,
+                        exception_code="serial_identity_collision",
+                        severity="error",
+                        row_disposition="retained",
+                        message=(
+                            "The same original serial occurs within the quarter with different "
+                            "model, supplied manufacturer, or capacity evidence; all records are "
+                            "preserved and final device identity must be resolved centrally"
+                        ),
+                        raw_record_json=payloads[ordinal],
+                        raw_record_sha256=fingerprints[ordinal],
+                        first_seen_source_file=first_file,
+                        first_seen_record_number=first_record,
+                        first_seen_date=min(first_date, current_date).isoformat(),
+                        last_seen_date=max(prior_last_date, current_date).isoformat(),
+                    )
+                )
         return issues
 
     def complete_member(self, member_index: int, stats: QualityStats, files: Mapping[str, Any]) -> None:

@@ -874,12 +874,14 @@ def _process_member(
                                     stats.daily_source_rows[key] = stats.daily_source_rows.get(key, 0) + 1
                                 except ValueError:
                                     pass
+                            source_flag: str | None = None
                             if failure_position is not None and values[failure_position].strip() in {"0", "1"}:
-                                flag = values[failure_position].strip()
-                                stats.failure_flag_counts[flag] = stats.failure_flag_counts.get(flag, 0) + 1
-                                if flag == "1" and source_date is not None:
-                                    key = source_date.isoformat()
-                                    stats.daily_failure_flags[key] = stats.daily_failure_flags.get(key, 0) + 1
+                                source_flag = values[failure_position].strip()
+                                stats.record_failure_flag(
+                                    source_flag,
+                                    source_date,
+                                    disposition="source",
+                                )
 
                             row, issues, smart_states = convert_record(
                                 values,
@@ -892,21 +894,68 @@ def _process_member(
                                 quarter_end=quarter_end,
                                 missing_tokens=missing_tokens,
                             )
+                            model_position = index.get("model")
+                            model_token = (
+                                values[model_position] if model_position is not None else None
+                            )
+                            model_key = (
+                                "<MISSING>"
+                                if model_token is None or model_token.strip() in missing_tokens
+                                else model_token
+                            )
+                            member_extensions = set(member.analysis.unexpected_smart_columns)
                             for field_name, state in smart_states.items():
-                                stats.record_smart_state(field_name, state)
+                                if field_name in member_extensions:
+                                    stats.record_extension_state(
+                                        field_name,
+                                        state,
+                                        source_quarter=quarter,
+                                        source_file=member.info.filename,
+                                        model=model_key,
+                                    )
+                                else:
+                                    stats.record_smart_state(
+                                        field_name,
+                                        state,
+                                        source_quarter=quarter,
+                                        source_file=member.info.filename,
+                                        model=model_key,
+                                    )
+                            for field_name in (
+                                set(unexpected_smart_columns) - member_extensions
+                            ):
+                                stats.record_extension_state(
+                                    field_name,
+                                    "absent",
+                                    source_quarter=quarter,
+                                    source_file=member.info.filename,
+                                    model=model_key,
+                                )
                             for issue in issues:
                                 stats.record_issue(issue)
                             pending_issues.extend(issues)
                             if row is None:
                                 stats.quarantined_rows += 1
+                                if source_flag is not None:
+                                    stats.record_failure_flag(
+                                        source_flag,
+                                        source_date,
+                                        disposition="quarantined",
+                                    )
                             else:
+                                if source_flag is not None:
+                                    stats.record_failure_flag(
+                                        source_flag,
+                                        source_date,
+                                        disposition="retained",
+                                    )
                                 stats.observe_output(row, member.analysis.smart_columns)
                                 raw_json, raw_sha = raw_record_evidence(
                                     member.analysis.original_headers, values
                                 )
                                 identity_tokens = [
-                                    values[index[name]] if name in index else None
-                                    for name in ("serial_number", "model", "manufacturer", "capacity_bytes")
+                                    row.get(name)
+                                    for name in ("model", "manufacturer", "capacity_bytes")
                                 ]
                                 identity_json = json.dumps(
                                     identity_tokens,
@@ -1030,6 +1079,14 @@ def _schema_report(
         },
         "smart_columns": list(smart_columns),
         "unexpected_smart_string_columns": list(unexpected_smart_columns),
+        "unexpected_smart_contract": {
+            "canonical_type": "string",
+            "preservation": "original non-missing source token",
+            "interpretation": (
+                "Unvalidated extension; not treated as a numeric SMART measurement without "
+                "a separately approved explicit contract"
+            ),
+        },
         "members": [
             {
                 "filename": member.info.filename,
@@ -1106,6 +1163,61 @@ def _quality_report(
         field_name: stats.output_rows - stats.non_null_by_field.get(field_name, 0)
         for field_name in smart_columns
     }
+    extension_canonical_nulls = {
+        field_name: stats.output_rows - stats.non_null_by_field.get(field_name, 0)
+        for field_name in stats.extension_state_counts
+    }
+    failure_flags = sorted(
+        set(stats.failure_flag_counts)
+        | set(stats.retained_failure_flag_counts)
+        | set(stats.quarantined_failure_flag_counts)
+    )
+    failure_reconciliation = {
+        flag: {
+            "valid_source": stats.failure_flag_counts.get(flag, 0),
+            "retained_canonical": stats.retained_failure_flag_counts.get(flag, 0),
+            "quarantine_evidence": stats.quarantined_failure_flag_counts.get(flag, 0),
+            "passed": stats.failure_flag_counts.get(flag, 0)
+            == stats.retained_failure_flag_counts.get(flag, 0)
+            + stats.quarantined_failure_flag_counts.get(flag, 0),
+        }
+        for flag in failure_flags
+    }
+    daily_dates = sorted(
+        set(stats.daily_source_failure_flag_counts)
+        | set(stats.daily_retained_failure_flag_counts)
+        | set(stats.daily_quarantined_failure_flag_counts)
+    )
+    daily_reconciliation = {
+        observed_date: {
+            flag: {
+                "valid_source": stats.daily_source_failure_flag_counts.get(
+                    observed_date, {}
+                ).get(flag, 0),
+                "retained_canonical": stats.daily_retained_failure_flag_counts.get(
+                    observed_date, {}
+                ).get(flag, 0),
+                "quarantine_evidence": stats.daily_quarantined_failure_flag_counts.get(
+                    observed_date, {}
+                ).get(flag, 0),
+                "passed": stats.daily_source_failure_flag_counts.get(
+                    observed_date, {}
+                ).get(flag, 0)
+                == stats.daily_retained_failure_flag_counts.get(observed_date, {}).get(
+                    flag, 0
+                )
+                + stats.daily_quarantined_failure_flag_counts.get(
+                    observed_date, {}
+                ).get(flag, 0),
+            }
+            for flag in sorted(
+                set(stats.daily_source_failure_flag_counts.get(observed_date, {}))
+                | set(stats.daily_retained_failure_flag_counts.get(observed_date, {}))
+                | set(stats.daily_quarantined_failure_flag_counts.get(observed_date, {}))
+            )
+        }
+        for observed_date in daily_dates
+    }
     return {
         "schema_version": SCHEMA_VERSION,
         "row_accounting": validate_accounting(stats),
@@ -1116,14 +1228,81 @@ def _quality_report(
                 "present_blank_rows": stats.smart_blank_by_field.get(field_name, 0),
                 "invalid_token_rows": stats.smart_invalid_by_field.get(field_name, 0),
                 "genuine_zero_rows": stats.smart_zero_by_field.get(field_name, 0),
+                "suspicious_negative_rows": stats.smart_negative_by_field.get(
+                    field_name, 0
+                ),
                 "canonical_null_rows": missing_canonical[field_name],
             }
             for field_name in smart_columns
+        },
+        "negative_smart_values": {
+            "by_quarter": QualityStats._sorted_nested(stats.smart_negative_by_quarter),
+            "by_member": QualityStats._sorted_nested(stats.smart_negative_by_member),
+            "by_model": QualityStats._sorted_nested(stats.smart_negative_by_model),
+            "by_field": dict(sorted(stats.smart_negative_by_field.items())),
+            "interpretation": (
+                "Signed values are preserved exactly as decimal128(38,0) and flagged as "
+                "suspicious; no correction or universal SMART interpretation is applied"
+            ),
+        },
+        "unexpected_smart_extension_states": {
+            "by_field": {
+                field_name: {
+                    "absent_column_rows": states.get("absent", 0),
+                    "present_blank_rows": states.get("blank", 0),
+                    "literal_zero_rows": states.get("zero", 0),
+                    "other_nonempty_rows": states.get("value", 0),
+                    "canonical_null_rows": extension_canonical_nulls[field_name],
+                }
+                for field_name, states in sorted(stats.extension_state_counts.items())
+            },
+            "by_quarter": QualityStats._sorted_state_dimensions(
+                stats.extension_states_by_quarter
+            ),
+            "by_member": QualityStats._sorted_state_dimensions(
+                stats.extension_states_by_member
+            ),
+            "by_model": QualityStats._sorted_state_dimensions(
+                stats.extension_states_by_model
+            ),
+            "interpretation": (
+                "Unexpected smart_* extensions are source strings only and are not "
+                "validated numeric measurements"
+            ),
         },
         "calendar_coverage": dict(calendar_coverage),
         "source_authenticity": dict(source_assessment),
         "failure_flags": {
             "preserved_valid_source_counts": dict(sorted(stats.failure_flag_counts.items())),
+            "valid_source_counts": dict(sorted(stats.failure_flag_counts.items())),
+            "retained_canonical_counts": dict(
+                sorted(stats.retained_failure_flag_counts.items())
+            ),
+            "quarantine_evidence_counts": dict(
+                sorted(stats.quarantined_failure_flag_counts.items())
+            ),
+            "daily_valid_source_counts": QualityStats._sorted_nested(
+                stats.daily_source_failure_flag_counts
+            ),
+            "daily_retained_canonical_counts": QualityStats._sorted_nested(
+                stats.daily_retained_failure_flag_counts
+            ),
+            "daily_quarantine_evidence_counts": QualityStats._sorted_nested(
+                stats.daily_quarantined_failure_flag_counts
+            ),
+            "source_to_output_reconciliation": {
+                "by_flag": failure_reconciliation,
+                "by_date": daily_reconciliation,
+                "passed": all(
+                    item["passed"] for item in failure_reconciliation.values()
+                )
+                and all(
+                    item["passed"]
+                    for date_items in daily_reconciliation.values()
+                    for item in date_items.values()
+                ),
+            },
+            "first_failure_event_selection_performed": False,
             "interpretation": "Original recorded 0/1 flags; no physical-failure inference performed",
         },
         "central_integration_boundary": {
@@ -1163,6 +1342,33 @@ def _validation_results(
         except Exception:
             readable = False
             schemas_match = False
+    failure_flags = (
+        set(stats.failure_flag_counts)
+        | set(stats.retained_failure_flag_counts)
+        | set(stats.quarantined_failure_flag_counts)
+    )
+    failure_totals_reconcile = all(
+        stats.failure_flag_counts.get(flag, 0)
+        == stats.retained_failure_flag_counts.get(flag, 0)
+        + stats.quarantined_failure_flag_counts.get(flag, 0)
+        for flag in failure_flags
+    )
+    failure_dates = (
+        set(stats.daily_source_failure_flag_counts)
+        | set(stats.daily_retained_failure_flag_counts)
+        | set(stats.daily_quarantined_failure_flag_counts)
+    )
+    failure_daily_reconcile = all(
+        stats.daily_source_failure_flag_counts.get(observed_date, {}).get(flag, 0)
+        == stats.daily_retained_failure_flag_counts.get(observed_date, {}).get(flag, 0)
+        + stats.daily_quarantined_failure_flag_counts.get(observed_date, {}).get(flag, 0)
+        for observed_date in failure_dates
+        for flag in (
+            set(stats.daily_source_failure_flag_counts.get(observed_date, {}))
+            | set(stats.daily_retained_failure_flag_counts.get(observed_date, {}))
+            | set(stats.daily_quarantined_failure_flag_counts.get(observed_date, {}))
+        )
+    )
     checks = [
         {"name": "all_csv_members_completed", "passed": completed_count == member_count},
         validate_accounting(stats),
@@ -1178,6 +1384,12 @@ def _validation_results(
             "passed": parquet_rows == stats.output_rows,
             "parquet_rows": parquet_rows,
             "reported_output_rows": stats.output_rows,
+        },
+        {
+            "name": "failure_flag_source_to_output_reconciliation",
+            "passed": failure_totals_reconcile and failure_daily_reconcile,
+            "total_counts_passed": failure_totals_reconcile,
+            "daily_counts_passed": failure_daily_reconcile,
         },
     ]
     structural_pass = all(check["passed"] for check in checks)

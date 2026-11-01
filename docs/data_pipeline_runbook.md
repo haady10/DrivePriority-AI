@@ -117,7 +117,7 @@ The non-Hive `data/2016Q1/` directory is the physical quarter partition. Every P
 - Genuine numeric zero.
 - Canonical null.
 
-It also records expected and observed calendar dates, approved and unexplained gaps, out-of-quarter dates, original 0/1 failure counts, malformed rows, duplicate classes, candidate serial collisions, issue severities, model-level availability, complete row accounting, and an explicit zero count for fabricated rows.
+It also records expected and observed calendar dates, approved and unexplained gaps, out-of-quarter dates, separated source/retained/quarantined failure counts, malformed rows, duplicate classes, candidate serial collisions across dates, negative SMART aggregates, unexpected-extension source states, issue severities, model-level availability, complete row accounting, and an explicit zero count for fabricated rows.
 
 ### Validation and admission outcomes
 
@@ -132,7 +132,7 @@ Only `passed` and `passed_with_warnings` are marked eligible for central integra
 
 ### Exception evidence
 
-`exceptions.parquet` retains the source member, record and line location, raw identifier/date evidence, original header, exact unsafe token, exception code, severity, disposition, complete raw record JSON, record SHA-256, and first-seen location for duplicates.
+`exceptions.parquet` retains the source member, record and line location, raw identifier/date evidence, original header, exact unsafe token, exception code, severity, disposition, complete raw record JSON, record SHA-256, first-seen location, and first/last observation dates for collision evidence.
 
 ## Exact SMART representation
 
@@ -145,13 +145,17 @@ minimum = -(10^38 - 1)
 maximum = +(10^38 - 1)
 ```
 
-Base-10 integer tokens within this range are preserved exactly, including suspicious negative values. Blank is null and is never converted to zero. Fractional values, scientific notation, nonnumeric tokens, and integers outside the documented range produce a null canonical value plus complete exception evidence. No floating-point intermediate is used.
+Base-10 integer tokens within this range are preserved exactly, including suspicious negative values. Every negative SMART value remains signed `decimal128(38,0)` and also produces field-level warning evidence; counts are reported by quarter, source member, hardware model, and SMART field. Negative, zero, blank, absent, and invalid states remain distinct. Blank is null and is never converted to zero. Fractional values, scientific notation, nonnumeric tokens, and integers outside the documented range produce a null canonical value plus complete exception evidence. No floating-point intermediate is used.
 
 Normalized and raw SMART identifiers remain manufacturer-specific. The ingestion stage does not interpret SMART 188 or any other attribute as a universal physical measurement.
+
+Unexpected `smart_*` extensions that do not match the approved numeric naming contract remain nullable strings. Their original non-missing tokens are preserved, including literal `"0"`. The quality report separately records absent-column, blank, literal-zero, other-nonempty, and canonical-null states by quarter, member, model, and field. These extensions are not treated as validated numeric measurements without a separately approved explicit contract.
 
 ## Failure flags and row accounting
 
 The only valid canonical failure values are source literals `0` and `1`. They are preserved without relabeling. A row with an invalid or missing failure flag is kept in quarantine evidence and excluded from typed drive-day Parquet because it cannot satisfy the canonical contract.
+
+Failure accounting is reported separately for all valid source flags, flags retained in canonical Parquet, and valid flags belonging to quarantined rows. Each category includes daily `0`/`1` totals and source-to-output reconciliation. Quarantined failures are never counted as retained drive-day failures. Ingestion preserves every retained failure-day record and does not select a first failure event.
 
 Every parsed source row has exactly one disjoint disposition:
 
@@ -170,8 +174,9 @@ Within an assigned quarter, the pipeline reports:
 - Exact repeated source records.
 - Same-date/raw-serial records with different measurements.
 - Same-date/raw-serial records with conflicting model, manufacturer, or capacity evidence.
+- The same original serial appearing on different dates, members, or processing batches with different model, supplied manufacturer, or capacity signatures.
 
-All records remain present. The pipeline does not declare that a raw serial is a globally stable device key and does not choose a winning conflicting row.
+The disk-backed audit retains the first source location plus first and last observation dates for collision evidence. Blank and absent manufacturer values are both treated as unavailable identity evidence, while supplied manufacturer values remain part of the signature. Original serial strings are preserved exactly. All records remain present. The pipeline does not normalize or merge serials, declare that a raw serial is a globally stable device key, or choose a winning conflicting row.
 
 The project lead performs stable identity mapping, deterministic conflict resolution, cross-quarter duplicate detection, boundary continuity checks, and drive-history integration centrally after all quarterly manifests and partitions have been verified.
 
@@ -230,7 +235,7 @@ $env:PYTHONPATH = "src"
     -q
 ```
 
-Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, required headers, empty and zero-retained archives, exact SMART precision, blank/zero/invalid/absent states, failure flags, quarantines, malformed records, duplicate classes, source collisions, approved and unexplained calendar gaps, source-inventory provenance and mismatch handling, ordered validation outcomes, central admission, configuration safeguards, ZIP and disk limits, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, pipeline identity changes, checkpoint integrity, interruption, resume, and scoped restart.
+Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, required headers, empty and zero-retained archives, exact SMART precision, blank/zero/negative/invalid/absent states, unexpected SMART extension states, separated failure-flag accounting, quarantines, malformed records, same-date and cross-date collision classes across members and batches, original serial preservation, approved and unexplained calendar gaps, source-inventory provenance and mismatch handling, ordered validation outcomes, central admission, configuration safeguards, ZIP and disk limits, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, pipeline identity changes, checkpoint integrity, interruption, resume, and scoped restart.
 
 The existing H2O smoke test is separate. It verifies software startup with synthetic model data and is not evidence that the ingestion or research methodology is correct.
 

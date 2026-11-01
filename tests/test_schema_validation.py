@@ -120,10 +120,11 @@ def test_conversion_distinguishes_blank_zero_negative_and_invalid() -> None:
     assert states == {
         "smart_5_raw": "blank",
         "smart_9_raw": "zero",
-        "smart_198_raw": "value",
+        "smart_198_raw": "negative",
         "smart_200_raw": "invalid",
     }
     assert [(issue.exception_code, issue.raw_value) for issue in issues] == [
+        ("suspicious_negative_smart_value", "-4"),
         ("invalid_smart_value", "1.5")
     ]
     assert issues[0].raw_record_json is not None

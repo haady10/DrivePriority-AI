@@ -268,7 +268,10 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     assert table.column("smart_198_raw").to_pylist() == [0, 10**38 - 1, None]
     assert table.column("smart_vendor_blob").to_pylist() == [None, None, "opaque"]
     assert set(table.column("source_quarter").to_pylist()) == {"2016Q1"}
-    assert not (output / "exceptions.parquet").exists()
+    exceptions = pq.read_table(output / "exceptions.parquet")
+    assert exceptions.column("exception_code").to_pylist() == [
+        "suspicious_negative_smart_value"
+    ]
 
     quality = read_json(output / "quality_report.json")
     assert quality["smart_source_states"]["smart_5_raw"] == {
@@ -276,9 +279,11 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
         "present_blank_rows": 1,
         "invalid_token_rows": 0,
         "genuine_zero_rows": 1,
+        "suspicious_negative_rows": 1,
         "canonical_null_rows": 1,
     }
     assert quality["smart_source_states"]["smart_198_raw"]["absent_column_rows"] == 1
+    assert quality["smart_source_states"]["smart_5_raw"]["suspicious_negative_rows"] == 1
     assert quality["failure_flags"]["preserved_valid_source_counts"] == {"0": 2, "1": 1}
     assert quality["calendar_coverage"]["observed_dates"] == [
         "2016-01-01",
@@ -1258,3 +1263,293 @@ def test_insufficient_disk_space_fails_before_staging(tmp_path: Path, monkeypatc
         )
     assert not output.exists()
     assert not output.with_name(output.name + ".staging").exists()
+
+
+def run_identity_collision_case(
+    tmp_path: Path,
+    *,
+    mode: str,
+    changed_field: str = "model",
+) -> tuple[Path, dict, pa.Table]:
+    header = [*BASE_HEADER, "smart_5_raw"]
+    first = ["2016-01-01", "SERIAL-X", "Model A", "Vendor", "1000", "0", "1"]
+    second = ["2016-02-01", "SERIAL-X", "Model A", "Vendor", "1000", "0", "2"]
+    second[BASE_HEADER.index(changed_field)] = {
+        "model": "Model B",
+        "manufacturer": "Other Vendor",
+        "capacity_bytes": "2000",
+    }[changed_field]
+    if mode == "cross_member":
+        members = {"a.csv": [header, first], "b.csv": [header, second]}
+        batch_rows = 10
+    else:
+        members = {"days.csv": [header, first, second]}
+        batch_rows = 1 if mode == "cross_batch" else 10
+    archive = write_archive(tmp_path / f"identity-{mode}-{changed_field}.zip", members)
+    output = tmp_path / f"identity-{mode}-{changed_field}"
+    result = run_ingestion(
+        config_path=write_test_config(tmp_path, batch_rows=batch_rows),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+    return output, result, read_drive_data(output)
+
+
+@pytest.mark.parametrize("mode", ["same_batch", "cross_batch", "cross_member"])
+def test_cross_date_serial_identity_collision_across_processing_boundaries(
+    tmp_path: Path, mode: str
+) -> None:
+    output, result, data = run_identity_collision_case(tmp_path, mode=mode)
+    exceptions = pq.read_table(output / "exceptions.parquet")
+    collision_indexes = [
+        index
+        for index, code in enumerate(exceptions.column("exception_code").to_pylist())
+        if code == "serial_identity_collision"
+    ]
+
+    assert data.num_rows == 2
+    assert data.column("serial_number").to_pylist() == ["SERIAL-X", "SERIAL-X"]
+    assert len(collision_indexes) == 1
+    index = collision_indexes[0]
+    assert exceptions.column("first_seen_date")[index].as_py() == "2016-01-01"
+    assert exceptions.column("last_seen_date")[index].as_py() == "2016-02-01"
+    assert exceptions.column("first_seen_source_file")[index].as_py() in {
+        "a.csv",
+        "days.csv",
+    }
+    assert result["validation_status"] == "requires_review"
+    assert "serial_identity_collisions" in read_json(
+        output / "validation_results.json"
+    )["review_reasons"]
+
+
+@pytest.mark.parametrize("changed_field", ["model", "manufacturer", "capacity_bytes"])
+def test_serial_identity_signature_audits_each_hardware_field(
+    tmp_path: Path, changed_field: str
+) -> None:
+    output, _result, data = run_identity_collision_case(
+        tmp_path,
+        mode="same_batch",
+        changed_field=changed_field,
+    )
+    codes = pq.read_table(output / "exceptions.parquet").column(
+        "exception_code"
+    ).to_pylist()
+
+    assert data.num_rows == 2
+    assert codes == ["serial_identity_collision"]
+
+
+def test_blank_and_absent_manufacturer_do_not_change_identity_and_serial_is_preserved(
+    tmp_path: Path,
+) -> None:
+    serial = "  SERIAL-ORIGINAL  "
+    with_manufacturer = [*BASE_HEADER, "smart_5_raw"]
+    without_manufacturer = [
+        "date",
+        "serial_number",
+        "model",
+        "capacity_bytes",
+        "failure",
+        "smart_5_raw",
+    ]
+    archive = write_archive(
+        tmp_path / "manufacturer-missing.zip",
+        {
+            "a.csv": [
+                with_manufacturer,
+                ["2016-01-01", serial, "Model", "", "1000", "0", "1"],
+            ],
+            "b.csv": [
+                without_manufacturer,
+                ["2016-02-01", serial, "Model", "1000", "0", "2"],
+            ],
+        },
+    )
+    output = tmp_path / "manufacturer-missing-output"
+
+    run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    data = read_drive_data(output)
+    assert data.column("serial_number").to_pylist() == [serial, serial]
+    assert data.column("manufacturer").to_pylist() == [None, None]
+    assert not (output / "exceptions.parquet").exists()
+
+
+def test_negative_smart_values_are_exact_traceable_and_aggregated(tmp_path: Path) -> None:
+    minimum = str(-(10**38 - 1))
+    archive = write_archive(
+        tmp_path / "negative-smart.zip",
+        {
+            "a.csv": [
+                [*BASE_HEADER, "smart_5_raw"],
+                ["2016-01-01", "SN-1", "Model A", "Vendor", "1000", "0", "-1"],
+                ["2016-01-02", "SN-2", "Model A", "Vendor", "1000", "0", minimum],
+                ["2016-01-03", "SN-3", "Model B", "Vendor", "1000", "0", "-999"],
+                ["2016-01-04", "SN-4", "Model B", "Vendor", "1000", "0", "0"],
+                ["2016-01-05", "SN-5", "Model B", "Vendor", "1000", "0", ""],
+                ["2016-01-06", "SN-6", "Model B", "Vendor", "1000", "0", "invalid"],
+            ],
+            "b.csv": [
+                BASE_HEADER,
+                ["2016-01-07", "SN-7", "Model C", "Vendor", "1000", "0"],
+            ],
+        },
+    )
+    output = tmp_path / "negative-smart-output"
+
+    run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    values = read_drive_data(output).column("smart_5_raw").to_pylist()
+    assert values[:3] == [-1, -(10**38 - 1), -999]
+    assert values[3:] == [0, None, None, None]
+    exceptions = pq.read_table(output / "exceptions.parquet")
+    codes = exceptions.column("exception_code").to_pylist()
+    assert codes.count("suspicious_negative_smart_value") == 3
+    assert set(
+        value
+        for code, value in zip(codes, exceptions.column("raw_value").to_pylist())
+        if code == "suspicious_negative_smart_value"
+    ) == {"-1", minimum, "-999"}
+    quality = read_json(output / "quality_report.json")
+    states = quality["smart_source_states"]["smart_5_raw"]
+    assert states == {
+        "absent_column_rows": 1,
+        "present_blank_rows": 1,
+        "invalid_token_rows": 1,
+        "genuine_zero_rows": 1,
+        "suspicious_negative_rows": 3,
+        "canonical_null_rows": 3,
+    }
+    negative = quality["negative_smart_values"]
+    assert negative["by_quarter"]["2016Q1"]["smart_5_raw"] == 3
+    assert negative["by_member"]["a.csv"]["smart_5_raw"] == 3
+    assert negative["by_model"]["Model A"]["smart_5_raw"] == 2
+    assert negative["by_model"]["Model B"]["smart_5_raw"] == 1
+
+
+def test_failure_flags_reconcile_source_retained_and_quarantined_rows(
+    tmp_path: Path,
+) -> None:
+    archive = write_archive(
+        tmp_path / "failure-accounting.zip",
+        {
+            "days.csv": [
+                BASE_HEADER,
+                ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "1"],
+                ["2016-01-01", "SN-2", "Model", "Vendor", "1000", "0"],
+                ["2016-01-02", "", "Model", "Vendor", "1000", "1"],
+                ["2016-01-02", "", "Model", "Vendor", "1000", "0"],
+                ["2016-01-03", "SN-3", "Model", "Vendor", "1000", "1"],
+            ]
+        },
+    )
+    output = tmp_path / "failure-accounting-output"
+
+    run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    assert read_drive_data(output).column("failure").to_pylist() == [1, 0, 1]
+    failure = read_json(output / "quality_report.json")["failure_flags"]
+    assert failure["valid_source_counts"] == {"0": 2, "1": 3}
+    assert failure["retained_canonical_counts"] == {"0": 1, "1": 2}
+    assert failure["quarantine_evidence_counts"] == {"0": 1, "1": 1}
+    assert failure["daily_valid_source_counts"]["2016-01-02"] == {"0": 1, "1": 1}
+    assert failure["daily_retained_canonical_counts"]["2016-01-01"] == {
+        "0": 1,
+        "1": 1,
+    }
+    assert failure["daily_quarantine_evidence_counts"]["2016-01-02"] == {
+        "0": 1,
+        "1": 1,
+    }
+    assert failure["source_to_output_reconciliation"]["passed"]
+    assert not failure["first_failure_event_selection_performed"]
+    reconciliation_check = next(
+        check
+        for check in read_json(output / "validation_results.json")["checks"]
+        if check["name"] == "failure_flag_source_to_output_reconciliation"
+    )
+    assert reconciliation_check == {
+        "name": "failure_flag_source_to_output_reconciliation",
+        "passed": True,
+        "total_counts_passed": True,
+        "daily_counts_passed": True,
+    }
+
+
+def test_unexpected_smart_extension_states_are_audited_without_numeric_interpretation(
+    tmp_path: Path,
+) -> None:
+    archive = write_archive(
+        tmp_path / "smart-extension.zip",
+        {
+            "a.csv": [
+                [*BASE_HEADER, "smart_vendor_blob"],
+                ["2016-01-01", "SN-1", "Model A", "Vendor", "1000", "0", ""],
+                ["2016-01-02", "SN-2", "Model A", "Vendor", "1000", "0", "0"],
+                ["2016-01-03", "SN-3", "Model C", "Vendor", "1000", "0", "opaque"],
+            ],
+            "b.csv": [
+                BASE_HEADER,
+                ["2016-01-04", "SN-4", "Model B", "Vendor", "1000", "0"],
+            ],
+        },
+    )
+    output = tmp_path / "smart-extension-output"
+
+    run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    data = read_drive_data(output)
+    assert data.schema.field("smart_vendor_blob").type == pa.string()
+    assert data.column("smart_vendor_blob").to_pylist() == [None, "0", "opaque", None]
+    quality = read_json(output / "quality_report.json")
+    extension = quality["unexpected_smart_extension_states"]
+    assert extension["by_field"]["smart_vendor_blob"] == {
+        "absent_column_rows": 1,
+        "present_blank_rows": 1,
+        "literal_zero_rows": 1,
+        "other_nonempty_rows": 1,
+        "canonical_null_rows": 2,
+    }
+    assert extension["by_member"]["a.csv"]["smart_vendor_blob"] == {
+        "blank": 1,
+        "value": 1,
+        "zero": 1,
+    }
+    assert extension["by_member"]["b.csv"]["smart_vendor_blob"] == {"absent": 1}
+    assert extension["by_model"]["Model B"]["smart_vendor_blob"] == {"absent": 1}
+    assert extension["by_quarter"]["2016Q1"]["smart_vendor_blob"] == {
+        "absent": 1,
+        "blank": 1,
+        "value": 1,
+        "zero": 1,
+    }
+    contract = read_json(output / "schema_report.json")["unexpected_smart_contract"]
+    assert contract["canonical_type"] == "string"
+    assert "not treated as a numeric" in contract["interpretation"]
