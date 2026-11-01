@@ -805,6 +805,73 @@ class DuplicateTracker:
             payloads.append(payload)
             quarters.append(row["source_quarter"])
 
+        batch_collision_evidence: dict[
+            int, tuple[date, date, str, int]
+        ] = {}
+        collision_state: dict[str, dict[str, list[tuple[Any, ...]]]] = {}
+
+        def update_two(
+            candidates: list[tuple[Any, ...]],
+            candidate: tuple[Any, ...],
+            *,
+            reverse: bool,
+        ) -> None:
+            existing = next(
+                (index for index, value in enumerate(candidates) if value[0] == candidate[0]),
+                None,
+            )
+            candidate_key = (*candidate[1:], candidate[0])
+            if existing is not None:
+                existing_key = (*candidates[existing][1:], candidates[existing][0])
+                is_better = (
+                    candidate_key > existing_key
+                    if reverse
+                    else candidate_key < existing_key
+                )
+                if is_better:
+                    candidates[existing] = candidate
+                else:
+                    return
+            else:
+                candidates.append(candidate)
+            candidates.sort(key=lambda value: (*value[1:], value[0]), reverse=reverse)
+            del candidates[2:]
+
+        for ordinal, (serial, identity, observed_date, source_file, record_number) in enumerate(
+            zip(
+                serials,
+                identity_signatures,
+                dates,
+                source_files,
+                record_numbers,
+                strict=True,
+            )
+        ):
+            state = collision_state.setdefault(serial, {"first": [], "last": []})
+            first_different = next(
+                (value for value in state["first"] if value[0] != identity), None
+            )
+            last_different = next(
+                (value for value in state["last"] if value[0] != identity), None
+            )
+            if first_different is not None and last_different is not None:
+                batch_collision_evidence[ordinal] = (
+                    first_different[1],
+                    last_different[1],
+                    first_different[2],
+                    int(first_different[3]),
+                )
+            update_two(
+                state["first"],
+                (identity, observed_date, source_file, record_number),
+                reverse=False,
+            )
+            update_two(
+                state["last"],
+                (identity, observed_date),
+                reverse=True,
+            )
+
         batch = pa.table(
             {
                 "batch_ordinal": pa.array(range(len(entries)), type=pa.uint64()),
@@ -868,45 +935,82 @@ class DuplicateTracker:
 
             identity_collision_rows = self.connection.execute(
                 """
-                WITH candidates AS (
-                    SELECT batch.batch_ordinal,
-                           history.first_observation_date AS first_seen_date,
-                           history.last_observation_date AS last_seen_date,
-                           history.first_source_file,
-                           history.first_source_record_number
-                    FROM _drivepriority_batch AS batch
-                    JOIN serial_identities AS history
-                      ON history.serial_number = batch.serial_number
-                     AND history.identity_signature <> batch.identity_signature
-                    UNION ALL
-                    SELECT current.batch_ordinal,
-                           prior.observation_date AS first_seen_date,
-                           prior.observation_date AS last_seen_date,
-                           prior.source_file AS first_source_file,
-                           prior.source_record_number AS first_source_record_number
-                    FROM _drivepriority_batch AS current
-                    JOIN _drivepriority_batch AS prior
-                      ON prior.serial_number = current.serial_number
-                     AND prior.identity_signature <> current.identity_signature
-                     AND prior.batch_ordinal < current.batch_ordinal
-                ), ranked AS (
+                WITH relevant_history AS (
+                    SELECT history.*
+                    FROM serial_identities AS history
+                    WHERE history.serial_number IN (
+                        SELECT DISTINCT serial_number FROM _drivepriority_batch
+                    )
+                ), first_ranked AS (
+                    SELECT *,
+                           count(*) OVER (PARTITION BY serial_number) AS identity_count,
+                           row_number() OVER (
+                               PARTITION BY serial_number
+                               ORDER BY first_observation_date, first_source_file,
+                                        first_source_record_number, identity_signature
+                           ) AS first_rank
+                    FROM relevant_history
+                ), first_summary AS (
+                    SELECT serial_number, max(identity_count) AS identity_count,
+                           max(CASE WHEN first_rank = 1 THEN identity_signature END)
+                               AS first_identity_1,
+                           max(CASE WHEN first_rank = 1 THEN first_observation_date END)
+                               AS first_date_1,
+                           max(CASE WHEN first_rank = 1 THEN first_source_file END)
+                               AS first_file_1,
+                           max(CASE WHEN first_rank = 1 THEN first_source_record_number END)
+                               AS first_record_1,
+                           max(CASE WHEN first_rank = 2 THEN identity_signature END)
+                               AS first_identity_2,
+                           max(CASE WHEN first_rank = 2 THEN first_observation_date END)
+                               AS first_date_2,
+                           max(CASE WHEN first_rank = 2 THEN first_source_file END)
+                               AS first_file_2,
+                           max(CASE WHEN first_rank = 2 THEN first_source_record_number END)
+                               AS first_record_2
+                    FROM first_ranked
+                    WHERE first_rank <= 2
+                    GROUP BY serial_number
+                ), last_ranked AS (
                     SELECT *, row_number() OVER (
-                        PARTITION BY batch_ordinal
-                        ORDER BY first_seen_date, first_source_file,
-                                 first_source_record_number
-                    ) AS first_rank
-                    FROM candidates
+                        PARTITION BY serial_number
+                        ORDER BY last_observation_date DESC, identity_signature
+                    ) AS last_rank
+                    FROM relevant_history
+                ), last_summary AS (
+                    SELECT serial_number,
+                           max(CASE WHEN last_rank = 1 THEN identity_signature END)
+                               AS last_identity_1,
+                           max(CASE WHEN last_rank = 1 THEN last_observation_date END)
+                               AS last_date_1,
+                           max(CASE WHEN last_rank = 2 THEN identity_signature END)
+                               AS last_identity_2,
+                           max(CASE WHEN last_rank = 2 THEN last_observation_date END)
+                               AS last_date_2
+                    FROM last_ranked
+                    WHERE last_rank <= 2
+                    GROUP BY serial_number
+                ), history_summary AS (
+                    SELECT first_summary.*, last_summary.last_identity_1,
+                           last_summary.last_date_1, last_summary.last_identity_2,
+                           last_summary.last_date_2
+                    FROM first_summary
+                    JOIN last_summary USING (serial_number)
                 )
-                SELECT batch_ordinal,
-                       min(first_seen_date) AS first_seen_date,
-                       max(last_seen_date) AS last_seen_date,
-                       max(CASE WHEN first_rank = 1 THEN first_source_file END)
-                           AS first_source_file,
-                       max(CASE WHEN first_rank = 1 THEN first_source_record_number END)
-                           AS first_source_record_number
-                FROM ranked
-                GROUP BY batch_ordinal
-                ORDER BY batch_ordinal
+                SELECT batch.batch_ordinal,
+                       CASE WHEN history.first_identity_1 <> batch.identity_signature
+                            THEN history.first_date_1 ELSE history.first_date_2 END,
+                       CASE WHEN history.last_identity_1 <> batch.identity_signature
+                            THEN history.last_date_1 ELSE history.last_date_2 END,
+                       CASE WHEN history.first_identity_1 <> batch.identity_signature
+                            THEN history.first_file_1 ELSE history.first_file_2 END,
+                       CASE WHEN history.first_identity_1 <> batch.identity_signature
+                            THEN history.first_record_1 ELSE history.first_record_2 END
+                FROM _drivepriority_batch AS batch
+                JOIN history_summary AS history USING (serial_number)
+                WHERE history.identity_count > 1
+                   OR history.first_identity_1 <> batch.identity_signature
+                ORDER BY batch.batch_ordinal
                 """
             ).fetchall()
 
@@ -987,6 +1091,22 @@ class DuplicateTracker:
             int(ordinal): (first_date, last_date, first_file, int(first_record))
             for ordinal, first_date, last_date, first_file, first_record in identity_collision_rows
         }
+        for ordinal, batch_evidence in batch_collision_evidence.items():
+            existing = collision_by_ordinal.get(ordinal)
+            if existing is None:
+                collision_by_ordinal[ordinal] = batch_evidence
+                continue
+            first_candidates = [
+                (existing[0], existing[2], existing[3]),
+                (batch_evidence[0], batch_evidence[2], batch_evidence[3]),
+            ]
+            first_date, first_file, first_record = min(first_candidates)
+            collision_by_ordinal[ordinal] = (
+                first_date,
+                max(existing[1], batch_evidence[1]),
+                first_file,
+                int(first_record),
+            )
         issues: list[ConversionIssue] = []
         for ordinal in sorted(set(duplicate_by_ordinal) | set(collision_by_ordinal)):
             row, record_number, line_number = entries[ordinal]

@@ -8,6 +8,7 @@ from collections import Counter
 import csv
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
+from decimal import Decimal
 import io
 import json
 import math
@@ -306,6 +307,7 @@ def load_configuration(path: Path) -> tuple[dict[str, Any], str]:
         raise PipelineError("Configuration processing must be a mapping")
     for name in (
         "batch_rows",
+        "canonical_batch_bytes",
         "exception_batch_rows",
         "exception_batch_bytes",
         "parquet_row_group_rows",
@@ -1249,6 +1251,20 @@ def _estimated_issue_bytes(issue: ConversionIssue) -> int:
     )
 
 
+def _estimated_canonical_entry_bytes(row: Mapping[str, Any]) -> int:
+    """Estimate buffered canonical and provenance payload bytes conservatively."""
+
+    total = 512
+    for value in row.values():
+        if isinstance(value, str):
+            total += len(value.encode("utf-8")) + 64
+        elif isinstance(value, Decimal):
+            total += len(str(value)) + 64
+        else:
+            total += 64
+    return total
+
+
 def _sanitized_failure_description(exc: BaseException, limit: int = 500) -> str:
     if isinstance(exc, UnicodeError):
         description = (
@@ -1347,6 +1363,7 @@ def _process_member(
 
     missing_tokens = {str(value) for value in config["schema"].get("missing_tokens", [""])}
     batch_rows = int(config["processing"].get("batch_rows", 32768))
+    canonical_batch_bytes = int(config["processing"]["canonical_batch_bytes"])
     exception_batch_rows = int(config["processing"]["exception_batch_rows"])
     exception_batch_bytes = int(config["processing"]["exception_batch_bytes"])
     encoding = str(config["processing"].get("encoding", "utf-8-sig"))
@@ -1356,6 +1373,7 @@ def _process_member(
     ]
     stats = QualityStats()
     pending_entries: list[tuple[Mapping[str, Any], int, int]] = []
+    pending_entry_bytes = 0
     pending_issues: list[ConversionIssue] = []
     pending_issue_bytes = 0
     written_evidence_ids: set[str] = set()
@@ -1410,7 +1428,7 @@ def _process_member(
             flush_exceptions()
 
     def flush_data() -> None:
-        nonlocal data_part_number, source_rows_in_batch
+        nonlocal data_part_number, source_rows_in_batch, pending_entry_bytes
         duplicate_issues = tracker.classify(pending_entries, fingerprint_fields)
         for issue in duplicate_issues:
             stats.record_issue(issue)
@@ -1432,6 +1450,7 @@ def _process_member(
                 config,
             )
         pending_entries.clear()
+        pending_entry_bytes = 0
         written_evidence_ids.clear()
         source_rows_in_batch = 0
         data_part_number += 1
@@ -1595,8 +1614,12 @@ def _process_member(
                                     identity_json.encode("utf-8")
                                 )
                                 pending_entries.append((row, source_record_number, reader.line_num))
+                                pending_entry_bytes += _estimated_canonical_entry_bytes(row)
 
-                        if source_rows_in_batch >= batch_rows:
+                        if (
+                            source_rows_in_batch >= batch_rows
+                            or pending_entry_bytes >= canonical_batch_bytes
+                        ):
                             flush_data()
         if source_rows_in_batch or pending_entries:
             flush_data()

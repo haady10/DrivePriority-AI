@@ -10,6 +10,8 @@ schema:
 processing:
   # Rows are decoded as text and converted in bounded Arrow batches.
   batch_rows: 32768
+  # Canonical Python buffers flush at either the row or estimated-byte limit.
+  canonical_batch_bytes: 67108864
   # Exception evidence is flushed independently from canonical source batches.
   exception_batch_rows: 8192
   exception_batch_bytes: 16777216

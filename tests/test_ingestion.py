@@ -29,7 +29,7 @@ from drivepriority.data.manifest import (
     REQUIREMENTS_PATH,
     pipeline_recovery_identity,
 )
-from drivepriority.data.validate import ValidationError
+from drivepriority.data.validate import DuplicateTracker, ValidationError
 
 
 CONFIG_SOURCE = Path(__file__).resolve().parents[1] / "configs" / "ingestion.yaml"
@@ -48,11 +48,13 @@ def write_test_config(
     tmp_path: Path,
     *,
     batch_rows: int = 2,
+    canonical_batch_bytes: int = 67108864,
     exception_batch_rows: int = 8192,
     exception_batch_bytes: int = 16777216,
 ) -> Path:
     config = yaml.safe_load(CONFIG_SOURCE.read_text(encoding="utf-8"))
     config["processing"]["batch_rows"] = batch_rows
+    config["processing"]["canonical_batch_bytes"] = canonical_batch_bytes
     config["processing"]["exception_batch_rows"] = exception_batch_rows
     config["processing"]["exception_batch_bytes"] = exception_batch_bytes
     config["processing"]["parquet_row_group_rows"] = batch_rows
@@ -1420,6 +1422,7 @@ def test_conflicting_duplicate_requires_review(tmp_path: Path) -> None:
     ("section", "field", "value"),
     [
         ("processing", "batch_rows", 0),
+        ("processing", "canonical_batch_bytes", 0),
         ("processing", "exception_batch_rows", 0),
         ("processing", "exception_batch_bytes", 0),
         ("processing", "parquet_row_group_rows", 0),
@@ -2738,3 +2741,96 @@ def test_structurally_valid_zip_with_corrupt_crc_is_rejected(tmp_path: Path) -> 
             source_url=SOURCE_URL,
         )
     assert not (tmp_path / "bad-crc-output").exists()
+
+
+def test_canonical_buffer_flushes_at_estimated_byte_limit_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    values = ["x" * 800, "y" * 800, "z" * 800]
+    archive = write_archive(
+        tmp_path / "canonical-byte-limit.zip",
+        {
+            "day.csv": [
+                [*BASE_HEADER, "smart_vendor_blob"],
+                *[
+                    [
+                        f"2016-01-0{index}",
+                        f"SN-{index}",
+                        "Model",
+                        "Vendor",
+                        "1000",
+                        "0",
+                        value,
+                    ]
+                    for index, value in enumerate(values, start=1)
+                ],
+            ]
+        },
+    )
+    output = tmp_path / "canonical-byte-limit-output"
+
+    run_ingestion(
+        config_path=write_test_config(
+            tmp_path, batch_rows=1000, canonical_batch_bytes=1000
+        ),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    parts = sorted((output / "data").rglob("*.parquet"))
+    assert len(parts) == 3
+    assert read_drive_data(output).column("smart_vendor_blob").to_pylist() == values
+
+
+def test_large_same_serial_identity_group_avoids_pairwise_candidate_expansion(
+    tmp_path: Path,
+) -> None:
+    row_count = 10_000
+    start = date(1990, 1, 1)
+    tracker = DuplicateTracker(tmp_path / "large-collision-state.duckdb")
+    entries = []
+    for ordinal in range(row_count):
+        observed_date = start + timedelta(days=ordinal)
+        model = "Model-A" if ordinal % 2 == 0 else "Model-B"
+        entries.append(
+            (
+                {
+                    "date": observed_date,
+                    "serial_number": "SAME-SERIAL",
+                    "model": model,
+                    "manufacturer": "Vendor",
+                    "capacity_bytes": 1000,
+                    "failure": 0,
+                    "source_quarter": "synthetic-stress",
+                    "source_file": "large.csv",
+                    "schema_version": "1.1.0",
+                },
+                ordinal + 1,
+                ordinal + 2,
+            )
+        )
+
+    try:
+        tracker.begin_member()
+        issues = tracker.classify(
+            entries,
+            (
+                "date",
+                "serial_number",
+                "model",
+                "manufacturer",
+                "capacity_bytes",
+                "failure",
+            ),
+        )
+    finally:
+        tracker.close()
+
+    collisions = [
+        issue for issue in issues if issue.exception_code == "serial_identity_collision"
+    ]
+    assert len(collisions) == row_count - 1
+    assert collisions[0].source_record_number == 2
+    assert collisions[-1].source_record_number == row_count
