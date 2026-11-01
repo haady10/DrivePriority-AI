@@ -29,6 +29,20 @@ Each run requires:
 
 Keep original ZIP files unmodified in approved raw evidence storage. Store ZIPs, Parquet data, generated reports, and models outside GitHub.
 
+### Approved source inventory
+
+`configs/ingestion.yaml` contains the approved source-inventory structure but does not fabricate the 42 quarter entries. Its repository default is explicitly `unavailable` with an empty `quarters` mapping. Runs without a verified entry may be processed for evidence, but their validation status is `requires_review` and they are not eligible for central integration.
+
+A verified inventory requires provenance reference, verifier, verification timestamp, and an approved quarter entry containing:
+
+- The canonical source URL and original archive filename.
+- The complete expected calendar-date list for the quarter.
+- Any explicitly approved missing dates.
+- Expected archive byte size when independently available.
+- Expected SHA-256 when independently available.
+
+Available trusted evidence is enforced exactly. A URL, filename, size, or checksum mismatch stops before staging. If an independent checksum is unavailable, the manifest records that fact and the run remains `requires_review`; the pipeline never invents a checksum or gap approval.
+
 ## Dry run
 
 A dry run verifies the local archive hash, ZIP inventory, CSV headers, quarter, configuration, and intended output without creating an output directory:
@@ -66,6 +80,8 @@ Processing occurs in a sibling directory ending in `.staging`. The final output 
 
 The CSV reader processes bounded row batches. It does not materialize a full quarter in Pandas. DuckDB stores duplicate-tracking state on disk with the configured memory limit.
 
+Before staging, the pipeline validates batch and Parquet row-group sizes, the selected Parquet compression codec, ZIP member/count/expansion limits, the staging suffix, mandatory integrity flags, and a free-disk-space estimate. The disk estimate is the greater of the configured fixed minimum and the archive's total uncompressed size multiplied by the configured working-space factor. Unsafe or disabled safeguards stop the run.
+
 ## Output layout
 
 ```text
@@ -85,7 +101,7 @@ The non-Hive `data/2016Q1/` directory is the physical quarter partition. Every P
 
 ### Source manifest
 
-`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, member inventory, original headers, CRC results, configuration and hash, Python/dependency versions, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, row counts, output checksums, validation status, and processing timestamps. If Git metadata is unavailable, the commit and scoped dirty state are recorded as unknown rather than being reported as clean; the exact source and requirements hashes remain mandatory.
+`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, approved-inventory assessment and provenance, member inventory, original headers, CRC results, configuration and hash, Python/dependency versions, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, disk-space preflight, row counts, output checksums, validation status, and processing timestamps. If Git metadata is unavailable, the commit and scoped dirty state are recorded as unknown rather than being reported as clean; the exact source and requirements hashes remain mandatory.
 
 ### Schema report
 
@@ -101,7 +117,18 @@ The non-Hive `data/2016Q1/` directory is the physical quarter partition. Every P
 - Genuine numeric zero.
 - Canonical null.
 
-It also records daily coverage, missing source dates, out-of-quarter dates, original 0/1 failure counts, malformed rows, duplicate classes, candidate serial collisions, model-level availability, and complete row accounting.
+It also records expected and observed calendar dates, approved and unexplained gaps, out-of-quarter dates, original 0/1 failure counts, malformed rows, duplicate classes, candidate serial collisions, issue severities, model-level availability, complete row accounting, and an explicit zero count for fabricated rows.
+
+### Validation and admission outcomes
+
+Validation outcomes are ordered by precedence:
+
+1. `failed` — a structural requirement failed. Examples include incomplete member processing, row-accounting failure, unreadable or incompatible Parquet, row-count mismatch, or zero retained records. The output remains in staging and is not published.
+2. `requires_review` — structure is intact, but the archive cannot be admitted centrally without explicit review. Causes include missing source-authenticity evidence, unavailable independent checksum, unexplained calendar gaps, conflicting duplicates, serial collisions, or error-severity exception evidence.
+3. `passed_with_warnings` — structure and admission checks pass, but warning evidence or documented approved gaps remain for review.
+4. `passed` — all structural, authenticity, coverage, and quality gates pass without findings.
+
+Only `passed` and `passed_with_warnings` are marked eligible for central integration. `requires_review` remains an immutable evidence output but is not an admission decision. The quarterly pipeline never resolves conflicting identities or fabricates missing dates.
 
 ### Exception evidence
 
@@ -133,6 +160,8 @@ input rows = typed output rows + quarantined rows
 ```
 
 Recoverable field exceptions, exact duplicates, and candidate identity collisions remain in typed output and are counted separately. Failure-day and later source observations are not removed during ingestion.
+
+Every CSV member must contain `date`, `serial_number`, `model`, `capacity_bytes`, and `failure` before row processing begins. Empty archives, empty CSV members, missing required headers, and runs producing zero retained canonical records are structural failures.
 
 ## Duplicate and identity audit
 
@@ -181,7 +210,7 @@ For every assigned quarter:
 3. Run the focused automated tests.
 4. Perform and review a dry run.
 5. Process the local archive.
-6. Require `passed` or `passed_with_warnings` in `validation_results.json`.
+6. Require `passed` or `passed_with_warnings` and `central_integration_admission.eligible: true` in `validation_results.json`.
 7. Review every warning and exception; do not silently correct or filter it.
 8. Verify archive and output checksums from `source_manifest.json`.
 9. Upload large artifacts to approved shared artifact storage, not GitHub.
@@ -201,7 +230,7 @@ $env:PYTHONPATH = "src"
     -q
 ```
 
-Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, exact SMART precision, blank/zero/invalid/absent states, failure flags, quarantines, malformed records, duplicate classes, source collisions, calendar coverage, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, pipeline identity changes, checkpoint integrity, interruption, resume, and scoped restart.
+Fixtures and outputs are created only in pytest temporary directories. The tests cover schema drift, required headers, empty and zero-retained archives, exact SMART precision, blank/zero/invalid/absent states, failure flags, quarantines, malformed records, duplicate classes, source collisions, approved and unexplained calendar gaps, source-inventory provenance and mismatch handling, ordered validation outcomes, central admission, configuration safeguards, ZIP and disk limits, row accounting, bounded batches, deterministic validation, corrupt archives, immutable reruns, pipeline identity changes, checkpoint integrity, interruption, resume, and scoped restart.
 
 The existing H2O smoke test is separate. It verifies software startup with synthetic model data and is not evidence that the ingestion or research methodology is correct.
 
@@ -211,6 +240,9 @@ The existing H2O smoke test is separate. It verifies software startup with synth
 - **CRC failure or malformed ZIP:** replace the local copy only after verifying the official source and expected SHA-256.
 - **Date outside assigned quarter:** review the member and assignment. The row remains in quarantine evidence.
 - **Missing source dates:** confirm the official archive inventory and disclose the gap; never fabricate rows.
+- **Source inventory unavailable:** preserve the local archive hash and evidence, but treat the result as `requires_review` until independently verified inventory evidence is provided.
+- **Trusted source mismatch:** stop and escalate. Do not edit the inventory or archive merely to make the values agree.
+- **Insufficient disk space:** use an approved output volume with enough free space or revise safeguards through reviewed configuration; never disable the check silently.
 - **Invalid SMART token:** inspect the exact raw token in `exceptions.parquet`; do not round, clip, or substitute zero.
 - **Candidate serial collision:** preserve all records and defer identity resolution to central integration.
 - **Staging identity mismatch:** use the correct output location or matching archive/configuration; never delete unrelated staging data.

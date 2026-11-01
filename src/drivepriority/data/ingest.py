@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -100,6 +101,114 @@ def calendar_dates(start: date, end: date) -> list[str]:
     return [(start + timedelta(days=offset)).isoformat() for offset in range(days + 1)]
 
 
+def _positive_integer(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise PipelineError(f"Configuration {label} must be a positive integer")
+    return value
+
+
+def _validate_source_inventory_configuration(payload: Mapping[str, Any]) -> None:
+    inventory = payload.get("source_inventory")
+    if not isinstance(inventory, dict):
+        raise PipelineError("Configuration source_inventory must be a mapping")
+    status = inventory.get("status")
+    if status not in {"unavailable", "verified"}:
+        raise PipelineError(
+            "Configuration source_inventory.status must be 'unavailable' or 'verified'"
+        )
+    quarters = inventory.get("quarters")
+    if not isinstance(quarters, dict):
+        raise PipelineError("Configuration source_inventory.quarters must be a mapping")
+    if status == "unavailable":
+        if quarters:
+            raise PipelineError(
+                "Unavailable source inventory cannot contain purported approved quarter entries"
+            )
+        return
+
+    for field_name in ("provenance_reference", "verified_by", "verified_at"):
+        value = inventory.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise PipelineError(
+                f"Verified source inventory requires non-empty {field_name}"
+            )
+
+    for quarter, entry in quarters.items():
+        if not isinstance(quarter, str) or not QUARTER_PATTERN.fullmatch(quarter):
+            raise PipelineError(f"Invalid source inventory quarter key: {quarter!r}")
+        if not isinstance(entry, dict) or entry.get("status") != "approved":
+            raise PipelineError(
+                f"Source inventory entry {quarter} must be an approved mapping"
+            )
+        canonical_url = entry.get("canonical_source_url")
+        if not isinstance(canonical_url, str):
+            raise PipelineError(
+                f"Source inventory entry {quarter} requires canonical_source_url"
+            )
+        _validate_source_url(canonical_url)
+        filename = entry.get("original_filename")
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or Path(filename).name != filename
+        ):
+            raise PipelineError(
+                f"Source inventory entry {quarter} requires a safe original_filename"
+            )
+        expected_bytes = entry.get("expected_bytes")
+        if expected_bytes is not None:
+            _positive_integer(
+                expected_bytes,
+                f"source_inventory.quarters.{quarter}.expected_bytes",
+            )
+        expected_sha256 = entry.get("expected_sha256")
+        if expected_sha256 is not None and not (
+            isinstance(expected_sha256, str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256)
+        ):
+            raise PipelineError(
+                f"Source inventory entry {quarter} expected_sha256 must be null or 64 hexadecimal characters"
+            )
+
+        expected_dates = entry.get("expected_dates")
+        approved_gaps = entry.get("approved_missing_dates")
+        if not isinstance(expected_dates, list) or not all(
+            isinstance(value, str) for value in expected_dates
+        ):
+            raise PipelineError(
+                f"Source inventory entry {quarter} expected_dates must be a date list"
+            )
+        if not isinstance(approved_gaps, list) or not all(
+            isinstance(value, str) for value in approved_gaps
+        ):
+            raise PipelineError(
+                f"Source inventory entry {quarter} approved_missing_dates must be a date list"
+            )
+        if len(expected_dates) != len(set(expected_dates)) or len(approved_gaps) != len(
+            set(approved_gaps)
+        ):
+            raise PipelineError(
+                f"Source inventory entry {quarter} contains duplicate calendar dates"
+            )
+        start, end = quarter_bounds(quarter)
+        quarter_calendar = set(calendar_dates(start, end))
+        try:
+            parsed_expected = {date.fromisoformat(value).isoformat() for value in expected_dates}
+            parsed_gaps = {date.fromisoformat(value).isoformat() for value in approved_gaps}
+        except ValueError as exc:
+            raise PipelineError(
+                f"Source inventory entry {quarter} contains an invalid ISO date"
+            ) from exc
+        if parsed_expected != quarter_calendar:
+            raise PipelineError(
+                f"Source inventory entry {quarter} expected_dates must enumerate the complete quarter calendar"
+            )
+        if not parsed_gaps.issubset(quarter_calendar):
+            raise PipelineError(
+                f"Source inventory entry {quarter} approved gaps must fall inside the quarter"
+            )
+
+
 def load_configuration(path: Path) -> tuple[dict[str, Any], str]:
     raw = path.read_bytes()
     payload = yaml.safe_load(raw)
@@ -110,8 +219,15 @@ def load_configuration(path: Path) -> tuple[dict[str, Any], str]:
             f"Configuration schema.version must be {SCHEMA_VERSION!r}"
         )
     validation = payload.get("validation", {})
+    if not isinstance(validation, dict):
+        raise PipelineError("Configuration validation must be a mapping")
     frozen_safeguards = {
+        "require_dates_within_quarter": True,
         "preserve_source_duplicates": True,
+        "require_complete_row_accounting": True,
+        "require_nonempty_output": True,
+        "require_checkpoint_integrity": True,
+        "require_source_inventory_review": True,
         "resolve_final_device_identity": False,
         "generate_future_labels": False,
     }
@@ -120,8 +236,76 @@ def load_configuration(path: Path) -> tuple[dict[str, Any], str]:
             raise PipelineError(
                 f"Configuration validation.{name} must remain {required_value!r} in quarterly ingestion"
             )
-    if int(payload.get("processing", {}).get("batch_rows", 0)) <= 0:
-        raise PipelineError("Configuration processing.batch_rows must be positive")
+    processing = payload.get("processing")
+    if not isinstance(processing, dict):
+        raise PipelineError("Configuration processing must be a mapping")
+    for name in (
+        "batch_rows",
+        "parquet_row_group_rows",
+        "worker_threads",
+        "maximum_archive_members",
+        "maximum_member_uncompressed_bytes",
+        "maximum_archive_uncompressed_bytes",
+        "minimum_free_space_bytes",
+    ):
+        _positive_integer(processing.get(name), f"processing.{name}")
+    encoding = processing.get("encoding")
+    if not isinstance(encoding, str) or not encoding.strip():
+        raise PipelineError("Configuration processing.encoding must be a non-empty string")
+    for name, minimum in (
+        ("maximum_compression_ratio", 0.0),
+        ("working_space_multiplier", 1.0),
+    ):
+        value = processing.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise PipelineError(f"Configuration processing.{name} must be numeric")
+        numeric = float(value)
+        if not math.isfinite(numeric) or numeric <= minimum:
+            comparator = "greater than 1" if minimum == 1.0 else "positive"
+            raise PipelineError(
+                f"Configuration processing.{name} must be finite and {comparator}"
+            )
+
+    parquet = payload.get("parquet")
+    if not isinstance(parquet, dict):
+        raise PipelineError("Configuration parquet must be a mapping")
+    compression = parquet.get("compression")
+    if not isinstance(compression, str) or not compression.strip():
+        raise PipelineError("Configuration parquet.compression must be a non-empty string")
+    compression = compression.lower()
+    if compression not in {"none", "uncompressed"}:
+        try:
+            available = pa.Codec.is_available(compression)
+        except ValueError as exc:
+            raise PipelineError(
+                f"Unsupported Parquet compression codec: {compression}"
+            ) from exc
+        if not available:
+            raise PipelineError(f"Parquet compression codec is unavailable: {compression}")
+    compression_level = parquet.get("compression_level")
+    if (
+        isinstance(compression_level, bool)
+        or not isinstance(compression_level, int)
+        or compression_level < 0
+    ):
+        raise PipelineError("Configuration parquet.compression_level must be a non-negative integer")
+
+    recovery = payload.get("recovery")
+    if not isinstance(recovery, dict):
+        raise PipelineError("Configuration recovery must be a mapping")
+    staging_suffix = recovery.get("staging_suffix")
+    if not isinstance(staging_suffix, str) or not re.fullmatch(
+        r"\.[A-Za-z0-9][A-Za-z0-9._-]{0,63}", staging_suffix
+    ):
+        raise PipelineError(
+            "Configuration recovery.staging_suffix must be a safe dot-prefixed filename suffix"
+        )
+    if recovery.get("completed_output_policy") != "verify":
+        raise PipelineError(
+            "Configuration recovery.completed_output_policy must remain 'verify'"
+        )
+
+    _validate_source_inventory_configuration(payload)
     return payload, sha256_bytes(raw)
 
 
@@ -147,12 +331,24 @@ def inspect_archive(
     """Read the ZIP inventory and every CSV header without extracting members."""
 
     processing = config["processing"]
-    maximum_member_bytes = processing.get("maximum_member_uncompressed_bytes")
-    maximum_ratio = float(processing.get("maximum_compression_ratio", 200))
+    maximum_member_bytes = int(processing["maximum_member_uncompressed_bytes"])
+    maximum_archive_bytes = int(processing["maximum_archive_uncompressed_bytes"])
+    maximum_members = int(processing["maximum_archive_members"])
+    maximum_ratio = float(processing["maximum_compression_ratio"])
     encoding = str(processing.get("encoding", "utf-8-sig"))
 
     members: list[MemberPlan] = []
     with zipfile.ZipFile(archive, "r") as source:
+        file_infos = [info for info in source.infolist() if not info.is_dir()]
+        if len(file_infos) > maximum_members:
+            raise PipelineError(
+                f"Archive contains {len(file_infos)} files, exceeding the configured limit {maximum_members}"
+            )
+        total_uncompressed_bytes = sum(info.file_size for info in file_infos)
+        if total_uncompressed_bytes > maximum_archive_bytes:
+            raise PipelineError(
+                "Archive uncompressed size exceeds the configured total expansion limit"
+            )
         csv_infos = [
             (index, info)
             for index, info in enumerate(source.infolist())
@@ -165,7 +361,7 @@ def inspect_archive(
             raise PipelineError("Archive contains duplicate CSV member names")
 
         for archive_index, info in sorted(csv_infos, key=lambda item: (item[1].filename.casefold(), item[0])):
-            if maximum_member_bytes is not None and info.file_size > int(maximum_member_bytes):
+            if info.file_size > maximum_member_bytes:
                 raise PipelineError(f"Member exceeds configured size limit: {info.filename}")
             ratio = info.file_size / max(info.compress_size, 1)
             if ratio > maximum_ratio:
@@ -185,10 +381,17 @@ def inspect_archive(
                 analysis = analyze_headers(headers)
             except SchemaError as exc:
                 raise PipelineError(f"Invalid header in {info.filename}: {exc}") from exc
+            if analysis.missing_required_columns:
+                missing = ", ".join(analysis.missing_required_columns)
+                raise PipelineError(
+                    f"CSV member {info.filename} is missing required columns: {missing}"
+                )
             members.append(MemberPlan(archive_index, info, analysis))
 
     inventory = {
         "member_count": len(members),
+        "archive_file_count": len(file_infos),
+        "total_uncompressed_bytes": total_uncompressed_bytes,
         "members": [
             {
                 "archive_index": member.archive_index,
@@ -204,6 +407,105 @@ def inspect_archive(
         ],
     }
     return members, inventory
+
+
+def _assess_source_inventory(
+    config: Mapping[str, Any],
+    *,
+    quarter: str,
+    archive: Path,
+    archive_sha256: str,
+    source_url: str,
+) -> dict[str, Any]:
+    inventory = config["source_inventory"]
+    provenance = {
+        "status": inventory["status"],
+        "provenance_reference": inventory.get("provenance_reference"),
+        "verified_by": inventory.get("verified_by"),
+        "verified_at": inventory.get("verified_at"),
+    }
+    entry = inventory["quarters"].get(quarter)
+    if inventory["status"] != "verified":
+        return {
+            "status": "requires_review",
+            "provenance": provenance,
+            "quarter_entry_status": "unavailable",
+            "authenticity_verified": False,
+            "trusted_gap_evidence": False,
+            "approved_missing_dates": [],
+            "review_reasons": ["approved_source_inventory_unavailable"],
+            "checks": [],
+        }
+    if entry is None:
+        return {
+            "status": "requires_review",
+            "provenance": provenance,
+            "quarter_entry_status": "missing",
+            "authenticity_verified": False,
+            "trusted_gap_evidence": False,
+            "approved_missing_dates": [],
+            "review_reasons": ["approved_source_inventory_entry_missing"],
+            "checks": [],
+        }
+
+    checks: list[dict[str, Any]] = []
+
+    def require_match(name: str, expected: Any, observed: Any) -> None:
+        passed = expected == observed
+        checks.append({"name": name, "expected": expected, "observed": observed, "passed": passed})
+        if not passed:
+            raise PipelineError(
+                f"Approved source inventory mismatch for {quarter}: {name}"
+            )
+
+    require_match("canonical_source_url", entry["canonical_source_url"], source_url)
+    require_match("original_filename", entry["original_filename"], archive.name)
+    if entry.get("expected_bytes") is not None:
+        require_match("archive_bytes", int(entry["expected_bytes"]), archive.stat().st_size)
+    if entry.get("expected_sha256") is not None:
+        require_match(
+            "archive_sha256",
+            str(entry["expected_sha256"]).lower(),
+            archive_sha256.lower(),
+        )
+
+    review_reasons: list[str] = []
+    authenticity_verified = entry.get("expected_sha256") is not None
+    if not authenticity_verified:
+        review_reasons.append("independent_archive_checksum_unavailable")
+    return {
+        "status": "requires_review" if review_reasons else "verified",
+        "provenance": provenance,
+        "quarter_entry_status": "approved",
+        "authenticity_verified": authenticity_verified,
+        "trusted_gap_evidence": True,
+        "expected_dates": list(entry["expected_dates"]),
+        "approved_missing_dates": sorted(entry["approved_missing_dates"]),
+        "review_reasons": review_reasons,
+        "checks": checks,
+    }
+
+
+def _disk_space_preflight(
+    output_parent: Path,
+    archive_inventory: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> dict[str, int | float]:
+    processing = config["processing"]
+    multiplier = float(processing["working_space_multiplier"])
+    estimated = math.ceil(int(archive_inventory["total_uncompressed_bytes"]) * multiplier)
+    required = max(int(processing["minimum_free_space_bytes"]), estimated)
+    available = shutil.disk_usage(output_parent).free
+    if available < required:
+        raise PipelineError(
+            f"Insufficient free disk space: requires at least {required} bytes, found {available}"
+        )
+    return {
+        "available_bytes": available,
+        "required_bytes": required,
+        "minimum_free_space_bytes": int(processing["minimum_free_space_bytes"]),
+        "working_space_multiplier": multiplier,
+    }
 
 
 def _state_identity(
@@ -388,12 +690,15 @@ def _cleanup_incomplete_files(staging: Path, completed: Mapping[int, Mapping[str
 
 def _parquet_write_options(config: Mapping[str, Any]) -> dict[str, Any]:
     parquet = config["parquet"]
-    return {
-        "compression": str(parquet.get("compression", "zstd")),
-        "compression_level": int(parquet.get("compression_level", 3)),
+    compression = str(parquet.get("compression", "zstd")).lower()
+    options: dict[str, Any] = {
+        "compression": None if compression in {"none", "uncompressed"} else compression,
         "write_statistics": bool(parquet.get("write_statistics", True)),
         "use_dictionary": bool(parquet.get("dictionary_encode_strings", True)),
     }
+    if options["compression"] is not None:
+        options["compression_level"] = int(parquet.get("compression_level", 3))
+    return options
 
 
 def _write_parquet(path: Path, table: pa.Table, config: Mapping[str, Any]) -> None:
@@ -746,20 +1051,57 @@ def _schema_report(
     }
 
 
-def _quality_report(
+def _calendar_coverage(
     stats: QualityStats,
-    smart_columns: Sequence[str],
     quarter_start: date,
     quarter_end: date,
+    source_assessment: Mapping[str, Any],
 ) -> dict[str, Any]:
-    expected_dates = calendar_dates(quarter_start, quarter_end)
+    expected_dates = list(
+        source_assessment.get("expected_dates", calendar_dates(quarter_start, quarter_end))
+    )
     observed_dates = sorted(
         value for value in stats.daily_source_rows if quarter_start.isoformat() <= value <= quarter_end.isoformat()
     )
     missing_dates = sorted(set(expected_dates) - set(observed_dates))
+    approved_candidates = (
+        set(source_assessment.get("approved_missing_dates", []))
+        if source_assessment.get("trusted_gap_evidence")
+        else set()
+    )
+    approved_missing_dates = sorted(set(missing_dates) & approved_candidates)
+    unexplained_missing_dates = sorted(set(missing_dates) - approved_candidates)
     outside_dates = sorted(
         value for value in stats.daily_source_rows if value < quarter_start.isoformat() or value > quarter_end.isoformat()
     )
+    if unexplained_missing_dates:
+        coverage_status = "requires_review"
+    elif approved_missing_dates:
+        coverage_status = "complete_with_approved_gaps"
+    else:
+        coverage_status = "complete"
+    return {
+        "status": coverage_status,
+        "expected_start": quarter_start.isoformat(),
+        "expected_end": quarter_end.isoformat(),
+        "expected_day_count": len(expected_dates),
+        "observed_dates": observed_dates,
+        "missing_source_dates": missing_dates,
+        "approved_missing_source_dates": approved_missing_dates,
+        "unexplained_missing_source_dates": unexplained_missing_dates,
+        "outside_assigned_quarter_dates": outside_dates,
+        "daily_source_rows": dict(sorted(stats.daily_source_rows.items())),
+        "daily_failure_flags": dict(sorted(stats.daily_failure_flags.items())),
+        "fabricated_rows": 0,
+    }
+
+
+def _quality_report(
+    stats: QualityStats,
+    smart_columns: Sequence[str],
+    calendar_coverage: Mapping[str, Any],
+    source_assessment: Mapping[str, Any],
+) -> dict[str, Any]:
     missing_canonical = {
         field_name: stats.output_rows - stats.non_null_by_field.get(field_name, 0)
         for field_name in smart_columns
@@ -778,16 +1120,8 @@ def _quality_report(
             }
             for field_name in smart_columns
         },
-        "calendar_coverage": {
-            "expected_start": quarter_start.isoformat(),
-            "expected_end": quarter_end.isoformat(),
-            "expected_day_count": len(expected_dates),
-            "observed_dates": observed_dates,
-            "missing_source_dates": missing_dates,
-            "outside_assigned_quarter_dates": outside_dates,
-            "daily_source_rows": dict(sorted(stats.daily_source_rows.items())),
-            "daily_failure_flags": dict(sorted(stats.daily_failure_flags.items())),
-        },
+        "calendar_coverage": dict(calendar_coverage),
+        "source_authenticity": dict(source_assessment),
         "failure_flags": {
             "preserved_valid_source_counts": dict(sorted(stats.failure_flag_counts.items())),
             "interpretation": "Original recorded 0/1 flags; no physical-failure inference performed",
@@ -814,6 +1148,8 @@ def _validation_results(
     staging: Path,
     member_count: int,
     completed_count: int,
+    calendar_coverage: Mapping[str, Any],
+    source_assessment: Mapping[str, Any],
 ) -> dict[str, Any]:
     data_files = sorted((staging / "data").rglob("*.parquet")) if (staging / "data").exists() else []
     parquet_rows = 0
@@ -830,6 +1166,11 @@ def _validation_results(
     checks = [
         {"name": "all_csv_members_completed", "passed": completed_count == member_count},
         validate_accounting(stats),
+        {
+            "name": "nonempty_retained_output",
+            "passed": stats.output_rows > 0,
+            "retained_output_rows": stats.output_rows,
+        },
         {"name": "parquet_files_readable", "passed": readable},
         {"name": "canonical_schema_matches", "passed": schemas_match},
         {
@@ -840,12 +1181,43 @@ def _validation_results(
         },
     ]
     structural_pass = all(check["passed"] for check in checks)
-    has_quality_findings = bool(stats.issue_codes)
-    status = "failed" if not structural_pass else ("passed_with_warnings" if has_quality_findings else "passed")
+    review_reasons = list(source_assessment.get("review_reasons", []))
+    if calendar_coverage.get("unexplained_missing_source_dates"):
+        review_reasons.append("unexplained_calendar_coverage_gaps")
+    if stats.conflicting_duplicates:
+        review_reasons.append("conflicting_duplicate_records")
+    if stats.serial_identity_collisions:
+        review_reasons.append("serial_identity_collisions")
+    if stats.issue_severity_counts.get("error", 0):
+        review_reasons.append("error_severity_exception_evidence")
+    review_reasons = sorted(set(review_reasons))
+
+    warning_reasons: list[str] = []
+    if stats.issue_codes:
+        warning_reasons.append("quality_exception_evidence")
+    if calendar_coverage.get("approved_missing_source_dates"):
+        warning_reasons.append("approved_calendar_gaps_present")
+    warning_reasons = sorted(set(warning_reasons))
+
+    if not structural_pass:
+        status = "failed"
+    elif review_reasons:
+        status = "requires_review"
+    elif warning_reasons:
+        status = "passed_with_warnings"
+    else:
+        status = "passed"
     return {
         "schema_version": SCHEMA_VERSION,
         "status": status,
+        "outcome_order": ["failed", "requires_review", "passed_with_warnings", "passed"],
         "checks": checks,
+        "review_reasons": review_reasons,
+        "warning_reasons": warning_reasons,
+        "central_integration_admission": {
+            "eligible": status in {"passed", "passed_with_warnings"},
+            "requires_explicit_review": status == "requires_review",
+        },
         "quality_findings_do_not_resolve_identity": True,
         "deterministic_for_identical_inputs": True,
     }
@@ -886,6 +1258,13 @@ def run_ingestion(
     except OSError as exc:
         raise PipelineError(f"Cannot establish pipeline recovery identity: {exc}") from exc
     members, archive_inventory = inspect_archive(archive, config)
+    source_assessment = _assess_source_inventory(
+        config,
+        quarter=quarter,
+        archive=archive,
+        archive_sha256=archive_sha256,
+        source_url=source_url,
+    )
     smart_columns, unexpected_smart_columns = union_smart_columns(
         member.analysis for member in members
     )
@@ -906,6 +1285,7 @@ def run_ingestion(
             "output": str(output),
             "member_count": len(members),
             "smart_column_count": len(smart_columns),
+            "source_inventory": source_assessment,
             "intended_operations": [
                 "stream local CSV members in bounded batches",
                 "write staged partitioned Parquet and audit reports",
@@ -915,6 +1295,7 @@ def run_ingestion(
     if output.exists():
         return _verify_existing_output(output, identity)
     output.parent.mkdir(parents=True, exist_ok=True)
+    disk_preflight = _disk_space_preflight(output.parent, archive_inventory, config)
     staging_suffix = str(config["recovery"].get("staging_suffix", ".staging"))
     staging = output.with_name(output.name + staging_suffix)
     state, was_resumed = _prepare_staging(
@@ -968,9 +1349,26 @@ def run_ingestion(
         schema_report = _schema_report(
             members, output_schema, smart_columns, unexpected_smart_columns, stats
         )
-        quality_report = _quality_report(stats, smart_columns, start, end)
+        calendar_coverage = _calendar_coverage(
+            stats,
+            start,
+            end,
+            source_assessment,
+        )
+        quality_report = _quality_report(
+            stats,
+            smart_columns,
+            calendar_coverage,
+            source_assessment,
+        )
         validation = _validation_results(
-            stats, output_schema, staging, len(members), len(completed)
+            stats,
+            output_schema,
+            staging,
+            len(members),
+            len(completed),
+            calendar_coverage,
+            source_assessment,
         )
         write_json_atomic(staging / "schema_report.json", schema_report)
         write_json_atomic(staging / "quality_report.json", quality_report)
@@ -1031,6 +1429,7 @@ def run_ingestion(
                 "download_performed_by_pipeline": False,
                 "member_count": archive_inventory["member_count"],
                 "members": member_reports,
+                "approved_inventory_evidence": source_assessment,
             },
             "assigned_quarter": quarter,
             "quarter_start": start.isoformat(),
@@ -1052,6 +1451,7 @@ def run_ingestion(
                 "output_rows": stats.output_rows,
                 "quarantined_rows": stats.quarantined_rows,
                 "exception_rows": exception_rows,
+                "disk_space_preflight": disk_preflight,
             },
             "validation": validation,
             "outputs": inventory,

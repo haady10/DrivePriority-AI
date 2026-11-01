@@ -47,6 +47,7 @@ class QualityStats:
     smart_invalid_by_field: dict[str, int] = field(default_factory=dict)
     smart_zero_by_field: dict[str, int] = field(default_factory=dict)
     issue_codes: dict[str, int] = field(default_factory=dict)
+    issue_severity_counts: dict[str, int] = field(default_factory=dict)
     issues_by_field: dict[str, int] = field(default_factory=dict)
     model_rows: dict[str, int] = field(default_factory=dict)
     model_smart_non_null: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -59,6 +60,9 @@ class QualityStats:
 
     def record_issue(self, issue: ConversionIssue) -> None:
         self.issue_codes[issue.exception_code] = self.issue_codes.get(issue.exception_code, 0) + 1
+        self.issue_severity_counts[issue.severity] = (
+            self.issue_severity_counts.get(issue.severity, 0) + 1
+        )
         if issue.column_name:
             self.issues_by_field[issue.column_name] = self.issues_by_field.get(issue.column_name, 0) + 1
         if issue.exception_code == "exact_duplicate":
@@ -122,6 +126,7 @@ class QualityStats:
             "smart_invalid_by_field",
             "smart_zero_by_field",
             "issue_codes",
+            "issue_severity_counts",
             "issues_by_field",
             "model_rows",
             "daily_source_rows",
@@ -154,6 +159,7 @@ class QualityStats:
             "smart_invalid_by_field": dict(sorted(self.smart_invalid_by_field.items())),
             "smart_zero_by_field": dict(sorted(self.smart_zero_by_field.items())),
             "issue_codes": dict(sorted(self.issue_codes.items())),
+            "issue_severity_counts": dict(sorted(self.issue_severity_counts.items())),
             "issues_by_field": dict(sorted(self.issues_by_field.items())),
             "model_rows": dict(sorted(self.model_rows.items())),
             "model_smart_non_null": {
@@ -187,6 +193,7 @@ class QualityStats:
             smart_invalid_by_field=dict(payload.get("smart_invalid_by_field", {})),
             smart_zero_by_field=dict(payload.get("smart_zero_by_field", {})),
             issue_codes=dict(payload.get("issue_codes", {})),
+            issue_severity_counts=dict(payload.get("issue_severity_counts", {})),
             issues_by_field=dict(payload.get("issues_by_field", {})),
             model_rows=dict(payload.get("model_rows", {})),
             model_smart_non_null={

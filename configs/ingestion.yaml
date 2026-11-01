@@ -13,8 +13,12 @@ processing:
   encoding: "utf-8-sig"
   duckdb_memory_limit: "1GB"
   worker_threads: 2
-  maximum_member_uncompressed_bytes: null
+  maximum_archive_members: 2000
+  maximum_member_uncompressed_bytes: 2147483648
+  maximum_archive_uncompressed_bytes: 68719476736
   maximum_compression_ratio: 200
+  minimum_free_space_bytes: 1073741824
+  working_space_multiplier: 2.0
 
 parquet:
   compression: "zstd"
@@ -26,9 +30,21 @@ validation:
   require_dates_within_quarter: true
   preserve_source_duplicates: true
   require_complete_row_accounting: true
+  require_nonempty_output: true
+  require_checkpoint_integrity: true
+  require_source_inventory_review: true
   resolve_final_device_identity: false
   generate_future_labels: false
 
 recovery:
   completed_output_policy: "verify"
   staging_suffix: ".staging"
+
+# The research lead must populate and verify entries independently. An empty
+# inventory is processed as requires_review; it is never treated as approval.
+source_inventory:
+  status: "unavailable"
+  provenance_reference: null
+  verified_by: null
+  verified_at: null
+  quarters: {}
