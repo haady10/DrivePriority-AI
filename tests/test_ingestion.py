@@ -190,7 +190,20 @@ def complete_quarter_archive(
     return write_archive(tmp_path / "2016Q1-complete.zip", {"quarter.csv": rows})
 
 
-def fake_pipeline_identity(commit: str = "a" * 40) -> dict[str, object]:
+def fake_pipeline_identity(
+    commit: str = "a" * 40, *, duckdb_version: str = "2.0.0"
+) -> dict[str, object]:
+    runtime_environment = {
+        "identity_version": "1.0.0",
+        "python_version": "3.11.9",
+        "python_implementation": "CPython",
+        "python_cache_tag": "cpython-311",
+        "dependencies": {
+            "PyYAML": "6.0.3",
+            "duckdb": duckdb_version,
+            "pyarrow": "23.0.1",
+        },
+    }
     return {
         "pipeline_version": __version__,
         "git_commit": commit,
@@ -198,6 +211,10 @@ def fake_pipeline_identity(commit: str = "a" * 40) -> dict[str, object]:
         "runtime_source_sha256": "b" * 64,
         "requirements_sha256": "c" * 64,
         "pipeline_scoped_dirty": False,
+        "runtime_environment": runtime_environment,
+        "runtime_environment_sha256": hashlib.sha256(
+            (json.dumps(runtime_environment, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        ).hexdigest(),
     }
 
 
@@ -208,7 +225,9 @@ def write_identity_repository(tmp_path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# {relative}\n", encoding="utf-8")
     requirements = repository / REQUIREMENTS_PATH
-    requirements.write_text("pyarrow==23.0.1\n", encoding="utf-8")
+    requirements.write_text(
+        "duckdb==2.0.0\npyarrow==23.0.1\nPyYAML==6.0.3\n", encoding="utf-8"
+    )
     return repository
 
 
@@ -716,11 +735,100 @@ def test_runtime_source_change_changes_recovery_identity(tmp_path: Path) -> None
 def test_requirements_change_changes_recovery_identity(tmp_path: Path) -> None:
     repository = write_identity_repository(tmp_path)
     before = pipeline_recovery_identity(repository)
-    (repository / REQUIREMENTS_PATH).write_text("pyarrow==23.0.2\n", encoding="utf-8")
+    requirements = repository / REQUIREMENTS_PATH
+    requirements.write_text(
+        requirements.read_text(encoding="utf-8") + "# reviewed lock annotation\n",
+        encoding="utf-8",
+    )
     after = pipeline_recovery_identity(repository)
 
     assert before["requirements_sha256"] != after["requirements_sha256"]
     assert before["runtime_source_sha256"] == after["runtime_source_sha256"]
+
+
+def test_installed_runtime_change_changes_recovery_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repository = write_identity_repository(tmp_path)
+    first = fake_pipeline_identity()["runtime_environment"]
+    second = fake_pipeline_identity(duckdb_version="2.0.1")["runtime_environment"]
+    monkeypatch.setattr(
+        "drivepriority.data.manifest.runtime_environment_identity", lambda: first
+    )
+    before = pipeline_recovery_identity(repository)
+    monkeypatch.setattr(
+        "drivepriority.data.manifest.runtime_environment_identity", lambda: second
+    )
+    assert before["runtime_environment"] == first
+    with pytest.raises(RuntimeError, match="does not match requirements"):
+        pipeline_recovery_identity(repository)
+
+
+def test_installed_runtime_change_refuses_checkpoint_resume(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path, batch_rows=1)
+    output = tmp_path / "runtime-change-resume"
+    monkeypatch.setattr(
+        "drivepriority.data.ingest.pipeline_recovery_identity",
+        lambda _repository: fake_pipeline_identity(duckdb_version="2.0.0"),
+    )
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_rows=3,
+        )
+    monkeypatch.setattr(
+        "drivepriority.data.ingest.pipeline_recovery_identity",
+        lambda _repository: fake_pipeline_identity(duckdb_version="2.0.1"),
+    )
+
+    with pytest.raises(PipelineError, match="pipeline identity"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            resume=True,
+        )
+
+
+def test_installed_runtime_change_refuses_completed_output_reuse(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "runtime-change-complete"
+    monkeypatch.setattr(
+        "drivepriority.data.ingest.pipeline_recovery_identity",
+        lambda _repository: fake_pipeline_identity(duckdb_version="2.0.0"),
+    )
+    run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+    monkeypatch.setattr(
+        "drivepriority.data.ingest.pipeline_recovery_identity",
+        lambda _repository: fake_pipeline_identity(duckdb_version="2.0.1"),
+    )
+
+    with pytest.raises(PipelineError, match="pipeline identity"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+        )
 
 
 def test_unrelated_untracked_file_does_not_change_recovery_identity(
@@ -1321,10 +1429,21 @@ def test_conflicting_duplicate_requires_review(tmp_path: Path) -> None:
         ("processing", "worker_threads", 0),
         ("processing", "maximum_compression_ratio", 0),
         ("processing", "working_space_multiplier", 1.0),
+        ("processing", "encoding", "utf-16"),
+        ("processing", "encoding", "not-a-codec"),
+        ("processing", "duckdb_memory_limit", "1GB'; DROP TABLE records;--"),
         ("parquet", "compression", "not-a-codec"),
         ("parquet", "compression_level", -1),
+        ("parquet", "compression_level", 999999),
+        ("parquet", "write_statistics", 1),
+        ("parquet", "dictionary_encode_strings", "true"),
         ("recovery", "staging_suffix", "../unsafe"),
         ("recovery", "completed_output_policy", "overwrite"),
+        ("schema", "missing_value_contract_version", "0.0.0"),
+        ("schema", "missing_tokens", ["", "0"]),
+        ("schema", "missing_tokens", ""),
+        ("schema", "allowed_start_date", "2015-01-01"),
+        ("schema", "allowed_end_date", "2026-12-31"),
         ("validation", "require_dates_within_quarter", False),
         ("validation", "require_complete_row_accounting", False),
         ("validation", "require_nonempty_output", False),
@@ -1341,6 +1460,19 @@ def test_unsafe_configuration_values_are_rejected(
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(PipelineError, match=field):
+        load_configuration(config_path)
+
+
+@pytest.mark.parametrize(
+    "section", ["schema", "processing", "parquet", "validation", "recovery"]
+)
+def test_configuration_sections_must_be_mappings(tmp_path: Path, section: str) -> None:
+    config_path = write_test_config(tmp_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config[section] = []
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(PipelineError, match=section):
         load_configuration(config_path)
 
 

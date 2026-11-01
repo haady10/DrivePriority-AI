@@ -1,5 +1,6 @@
 schema:
   version: "1.1.0"
+  missing_value_contract_version: "1.0.0"
   allowed_start_date: "2016-01-01"
   allowed_end_date: "2026-06-30"
   # Empty CSV fields are source-missing. Other tokens are conversion errors.

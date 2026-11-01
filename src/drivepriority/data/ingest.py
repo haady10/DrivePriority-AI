@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 from collections import Counter
 import csv
 from dataclasses import dataclass, replace
@@ -77,6 +78,11 @@ RUNTIME_NAMES = {
     "processing_failure.json",
 }
 REPRODUCIBILITY_METHOD_VERSION = "1.0.0"
+MISSING_VALUE_CONTRACT_VERSION = "1.0.0"
+IMMUTABLE_MISSING_TOKENS = [""]
+DUCKDB_MEMORY_LIMIT_PATTERN = re.compile(
+    r"^[1-9][0-9]*(?:\.[0-9]+)?(?:B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)$"
+)
 
 
 class PipelineError(RuntimeError):
@@ -253,10 +259,29 @@ def load_configuration(path: Path) -> tuple[dict[str, Any], str]:
     payload = yaml.safe_load(raw)
     if not isinstance(payload, dict):
         raise PipelineError("Ingestion configuration must be a YAML mapping")
-    if payload.get("schema", {}).get("version") != SCHEMA_VERSION:
+    schema = payload.get("schema")
+    if not isinstance(schema, dict):
+        raise PipelineError("Configuration schema must be a mapping")
+    if schema.get("version") != SCHEMA_VERSION:
         raise PipelineError(
             f"Configuration schema.version must be {SCHEMA_VERSION!r}"
         )
+    if schema.get("missing_value_contract_version") != MISSING_VALUE_CONTRACT_VERSION:
+        raise PipelineError(
+            "Configuration schema.missing_value_contract_version must be "
+            f"{MISSING_VALUE_CONTRACT_VERSION!r}"
+        )
+    if schema.get("missing_tokens") != IMMUTABLE_MISSING_TOKENS:
+        raise PipelineError(
+            "Configuration schema.missing_tokens must be exactly ['']; literal zero and "
+            "all nonempty tokens are scientific source values"
+        )
+    for field, required in (
+        ("allowed_start_date", "2016-01-01"),
+        ("allowed_end_date", "2026-06-30"),
+    ):
+        if schema.get(field) != required:
+            raise PipelineError(f"Configuration schema.{field} must remain {required!r}")
     validation = payload.get("validation", {})
     if not isinstance(validation, dict):
         raise PipelineError("Configuration validation must be a mapping")
@@ -293,6 +318,24 @@ def load_configuration(path: Path) -> tuple[dict[str, Any], str]:
     encoding = processing.get("encoding")
     if not isinstance(encoding, str) or not encoding.strip():
         raise PipelineError("Configuration processing.encoding must be a non-empty string")
+    try:
+        canonical_encoding = codecs.lookup(encoding).name
+    except LookupError as exc:
+        raise PipelineError("Configuration processing.encoding is not a known codec") from exc
+    if canonical_encoding != codecs.lookup("utf-8-sig").name or encoding.lower().replace("_", "-") not in {
+        "utf-8-sig",
+        "utf8-sig",
+    }:
+        raise PipelineError(
+            "Configuration processing.encoding must remain 'utf-8-sig' for the quarterly contract"
+        )
+    memory_limit = processing.get("duckdb_memory_limit")
+    if not isinstance(memory_limit, str) or not DUCKDB_MEMORY_LIMIT_PATTERN.fullmatch(
+        memory_limit
+    ):
+        raise PipelineError(
+            "Configuration processing.duckdb_memory_limit must be a positive explicit byte unit"
+        )
     for name, minimum in (
         ("maximum_compression_ratio", 0.0),
         ("working_space_multiplier", 1.0),
@@ -330,6 +373,30 @@ def load_configuration(path: Path) -> tuple[dict[str, Any], str]:
         or compression_level < 0
     ):
         raise PipelineError("Configuration parquet.compression_level must be a non-negative integer")
+    if compression in {"none", "uncompressed"}:
+        if compression_level != 0:
+            raise PipelineError(
+                "Configuration parquet.compression_level must be 0 for uncompressed output"
+            )
+    else:
+        try:
+            supports_level = pa.Codec.supports_compression_level(compression)
+            if supports_level:
+                maximum_level = pa.Codec.maximum_compression_level(compression)
+                if compression_level > maximum_level:
+                    raise ValueError(
+                        f"compression level exceeds codec maximum {maximum_level}"
+                    )
+            elif compression_level != 0:
+                raise ValueError("codec does not accept an explicit compression level")
+            pa.Codec(compression, compression_level=compression_level)
+        except (ValueError, OSError, pa.ArrowException) as exc:
+            raise PipelineError(
+                "Configuration parquet.compression_level is invalid for the selected codec"
+            ) from exc
+    for field in ("write_statistics", "dictionary_encode_strings"):
+        if type(parquet.get(field)) is not bool:
+            raise PipelineError(f"Configuration parquet.{field} must be a boolean")
 
     recovery = payload.get("recovery")
     if not isinstance(recovery, dict):

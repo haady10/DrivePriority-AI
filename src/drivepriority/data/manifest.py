@@ -10,6 +10,7 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import subprocess
+import sys
 from typing import Any, Iterable, Mapping
 
 from drivepriority import __version__
@@ -25,6 +26,8 @@ PIPELINE_RUNTIME_PATHS = (
     "src/drivepriority/data/validate.py",
 )
 REQUIREMENTS_PATH = "requirements.txt"
+RECOVERY_DEPENDENCIES = ("duckdb", "pyarrow", "PyYAML")
+RUNTIME_IDENTITY_VERSION = "1.0.0"
 
 
 def sha256_file(path: Path) -> str:
@@ -74,6 +77,46 @@ def dependency_versions(names: Iterable[str]) -> dict[str, str]:
     return dict(sorted(versions.items()))
 
 
+def runtime_environment_identity() -> dict[str, Any]:
+    """Return the installed interpreter and scientific-runtime identity."""
+
+    return {
+        "identity_version": RUNTIME_IDENTITY_VERSION,
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "python_cache_tag": getattr(sys.implementation, "cache_tag", None),
+        "dependencies": dependency_versions(RECOVERY_DEPENDENCIES),
+    }
+
+
+def _validate_runtime_against_requirements(
+    requirements: Path, runtime_environment: Mapping[str, Any]
+) -> None:
+    locked: dict[str, str] = {}
+    for raw_line in requirements.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "==" not in line:
+            continue
+        name, version = line.split("==", 1)
+        locked[name.strip().lower()] = version.strip()
+    installed = runtime_environment.get("dependencies")
+    if not isinstance(installed, Mapping):
+        raise RuntimeError("Installed scientific runtime identity is unavailable")
+    mismatches: list[str] = []
+    for name in RECOVERY_DEPENDENCIES:
+        approved = locked.get(name.lower())
+        actual = installed.get(name)
+        if approved is None:
+            mismatches.append(f"{name}=missing-lock")
+        elif actual != approved:
+            mismatches.append(f"{name}=installed-{actual}/approved-{approved}")
+    if mismatches:
+        raise RuntimeError(
+            "Installed scientific runtime does not match requirements.txt: "
+            + ", ".join(mismatches)
+        )
+
+
 def git_revision(
     repository: Path, *, pathspecs: Iterable[str] | None = None
 ) -> dict[str, Any]:
@@ -121,6 +164,8 @@ def pipeline_recovery_identity(repository: Path) -> dict[str, Any]:
         repository,
         pathspecs=(*PIPELINE_RUNTIME_PATHS, REQUIREMENTS_PATH),
     )
+    runtime_environment = runtime_environment_identity()
+    _validate_runtime_against_requirements(requirements, runtime_environment)
     return {
         "pipeline_version": __version__,
         "git_commit": scoped_revision["commit"],
@@ -131,6 +176,10 @@ def pipeline_recovery_identity(repository: Path) -> dict[str, Any]:
         "runtime_source_sha256": sha256_bytes(stable_json_bytes(source_inventory)),
         "requirements_sha256": sha256_file(requirements),
         "pipeline_scoped_dirty": scoped_revision["dirty"],
+        "runtime_environment": runtime_environment,
+        "runtime_environment_sha256": sha256_bytes(
+            stable_json_bytes(runtime_environment)
+        ),
     }
 
 
@@ -139,14 +188,16 @@ def software_provenance(
     *,
     recovery_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    identity = dict(recovery_identity or pipeline_recovery_identity(repository))
     return {
         "pipeline_version": __version__,
         "python": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "platform": platform.platform(),
-        "dependencies": dependency_versions(("duckdb", "pyarrow", "PyYAML")),
+        "dependencies": dependency_versions(RECOVERY_DEPENDENCIES),
         "git": git_revision(repository),
-        "recovery_identity": dict(recovery_identity or pipeline_recovery_identity(repository)),
+        "runtime_environment_identity": identity.get("runtime_environment"),
+        "recovery_identity": identity,
     }
 
 

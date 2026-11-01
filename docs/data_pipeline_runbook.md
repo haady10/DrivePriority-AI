@@ -80,7 +80,7 @@ Processing occurs in a sibling directory ending in `.staging`. The final output 
 
 The CSV reader processes bounded row batches. It does not materialize a full quarter in Pandas. DuckDB stores duplicate-tracking state on disk with the configured memory limit. Exception evidence has independent `exception_batch_rows` and estimated `exception_batch_bytes` limits, and final exception compaction streams Parquet record batches instead of reading whole part files into memory. A single evidence item larger than the byte target is written intact in its own batch; evidence is never sampled, truncated, or discarded.
 
-Before staging, the pipeline validates batch and Parquet row-group sizes, the selected Parquet compression codec, ZIP member/count/expansion limits, the staging suffix, mandatory integrity flags, and a free-disk-space estimate. The disk estimate is the greater of the configured fixed minimum and the archive's total uncompressed size multiplied by the configured working-space factor. Unsafe or disabled safeguards stop the run.
+Before staging, the pipeline validates batch and Parquet row-group sizes, UTF-8-with-BOM-compatible decoding, the immutable empty-field missing-value contract, the DuckDB memory-limit syntax, Parquet boolean options and codec-specific compression level, ZIP member/count/expansion limits, the staging suffix, mandatory integrity flags, and a free-disk-space estimate. The disk estimate is the greater of the configured fixed minimum and the archive's total uncompressed size multiplied by the configured working-space factor. Unsafe, mistyped, or disabled safeguards stop the run. In particular, literal `"0"` can never be configured as missing.
 
 ## Output layout
 
@@ -102,7 +102,7 @@ The non-Hive `data/2016Q1/` directory is the physical quarter partition. Every P
 
 ### Source manifest
 
-`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, approved-inventory assessment and provenance, member inventory, original headers, CRC results, configuration and hash, Python/dependency versions, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, disk-space preflight, row counts, output checksums, validation status, and processing timestamps. If Git metadata is unavailable, the commit and scoped dirty state are recorded as unknown rather than being reported as clean; the exact source and requirements hashes remain mandatory.
+`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, approved-inventory assessment and provenance, member inventory, original headers, CRC results, configuration and hash, the installed Python implementation/version/cache tag and exact DuckDB/PyArrow/PyYAML versions, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, disk-space preflight, row counts, output checksums, validation status, and processing timestamps. Startup requires the installed core dependency versions to match their exact `requirements.txt` locks. The installed runtime identity is hashed into the recovery identity, so a runtime-version change cannot resume staged work or claim completed-output reuse under the prior environment. If Git metadata is unavailable, the commit and scoped dirty state are recorded as unknown rather than being reported as clean; the exact source, requirements, and installed-runtime hashes remain mandatory.
 
 ### Reproducibility scope
 
@@ -199,7 +199,7 @@ If processing stops, the final output directory remains absent and the matching 
 
 A CSV parsing or Unicode decoding failure atomically writes `processing_failure.json` in staging and marks `run_state.json` as failed. The report records the archive SHA-256, member and processing sequence, available approximate line/byte position, sanitized exception type and description, completed-member state, and recovery requirement. Failed parser staging cannot be resumed or published; inspect the report and use an explicit `--restart`. Restart removes only the verified matching staging directory and does not touch sibling or completed outputs.
 
-Resume only with the same archive SHA-256, source URL, quarter, schema version, configuration hash, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, and pipeline-scoped dirty state:
+Resume only with the same archive SHA-256, source URL, quarter, schema version, configuration hash, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, installed Python and core dependency identity, and pipeline-scoped dirty state:
 
 ```powershell
 .\.venv\Scripts\python.exe -m drivepriority.data.ingest `
