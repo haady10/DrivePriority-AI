@@ -3096,3 +3096,116 @@ def test_complete_manifest_without_marker_rejects_modified_report(
         )
     assert not output.exists()
     assert not (staging / "publication_ready.json").exists()
+
+
+@pytest.mark.parametrize("recovery_mode", ["marker_present", "pre_marker"])
+def test_recovered_publication_rejects_source_zip_changed_after_initial_check(
+    tmp_path: Path, monkeypatch, recovery_mode: str
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / f"{recovery_mode}-source-change-output"
+    interruption = (
+        {"_interrupt_before_publish": True}
+        if recovery_mode == "marker_present"
+        else {"_interrupt_after_complete_manifest": True}
+    )
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            **interruption,
+        )
+
+    real_verify_manifest = ingest_module._verify_completed_manifest
+    source_replaced = False
+
+    def verify_manifest_then_replace_source(*args, **kwargs):
+        nonlocal source_replaced
+        errors = real_verify_manifest(*args, **kwargs)
+        if not source_replaced:
+            write_archive(
+                archive,
+                {
+                    "replacement.csv": [
+                        BASE_HEADER,
+                        ["2016-01-01", "REPLACED", "Other", "Vendor", "1", "0"],
+                    ]
+                },
+            )
+            source_replaced = True
+        return errors
+
+    monkeypatch.setattr(
+        ingest_module,
+        "_verify_completed_manifest",
+        verify_manifest_then_replace_source,
+    )
+    with pytest.raises(
+        PipelineError,
+        match="Source ZIP identity changed during final publication",
+    ):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            resume=True,
+        )
+
+    assert source_replaced is True
+    assert not output.exists()
+    assert output.with_name(output.name + ".staging").is_dir()
+
+
+@pytest.mark.parametrize("publication_route", ["normal", "marker_present", "pre_marker"])
+def test_final_source_integrity_gate_allows_unchanged_archive(
+    tmp_path: Path, monkeypatch, publication_route: str
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / f"{publication_route}-source-gate-output"
+    if publication_route != "normal":
+        interruption = (
+            {"_interrupt_before_publish": True}
+            if publication_route == "marker_present"
+            else {"_interrupt_after_complete_manifest": True}
+        )
+        with pytest.raises(IngestionInterrupted):
+            run_ingestion(
+                config_path=config,
+                quarter="2016Q1",
+                archive=archive,
+                output=output,
+                source_url=SOURCE_URL,
+                **interruption,
+            )
+
+    real_verify_archive = ingest_module._verify_archive_unchanged
+    phases: list[str] = []
+
+    def record_archive_verification(*args, phase: str, **kwargs):
+        phases.append(phase)
+        return real_verify_archive(*args, phase=phase, **kwargs)
+
+    monkeypatch.setattr(
+        ingest_module,
+        "_verify_archive_unchanged",
+        record_archive_verification,
+    )
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        resume=publication_route != "normal",
+    )
+
+    assert result["status"] == "complete"
+    assert phases[-1] == "final publication"
+    assert output.is_dir()

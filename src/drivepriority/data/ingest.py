@@ -1790,6 +1790,8 @@ def _compact_exceptions(staging: Path, config: Mapping[str, Any]) -> int:
 def _finalize_publication(
     staging: Path,
     output: Path,
+    archive: Path,
+    source_snapshot: Mapping[str, Any],
     *,
     interrupt_after_cleanup: str | None = None,
 ) -> None:
@@ -1809,6 +1811,7 @@ def _finalize_publication(
             raise IngestionInterrupted(
                 f"Controlled interruption after publication cleanup of {internal_name}"
             )
+    _verify_archive_unchanged(archive, source_snapshot, phase="final publication")
     os.replace(staging, output)
 
 
@@ -1816,6 +1819,8 @@ def _publish_completed_staging(
     staging: Path,
     output: Path,
     identity: Mapping[str, Any],
+    archive: Path,
+    source_snapshot: Mapping[str, Any],
     *,
     interrupt_after_cleanup: str | None = None,
 ) -> dict[str, Any] | None:
@@ -1835,6 +1840,8 @@ def _publish_completed_staging(
     _finalize_publication(
         staging,
         output,
+        archive,
+        source_snapshot,
         interrupt_after_cleanup=interrupt_after_cleanup,
     )
     processing = manifest["processing"]
@@ -1853,6 +1860,8 @@ def _recover_completed_manifest_without_marker(
     output: Path,
     identity: Mapping[str, Any],
     config: Mapping[str, Any],
+    archive: Path,
+    source_snapshot: Mapping[str, Any],
     *,
     expected_member_count: int,
     interrupt_after_cleanup: str | None = None,
@@ -1936,6 +1945,8 @@ def _recover_completed_manifest_without_marker(
         staging,
         output,
         identity,
+        archive,
+        source_snapshot,
         interrupt_after_cleanup=interrupt_after_cleanup,
     )
     if result is None:
@@ -2623,6 +2634,8 @@ def run_ingestion(
             staging,
             output,
             identity,
+            archive,
+            source_snapshot,
             interrupt_after_cleanup=_interrupt_publication_after_cleanup,
         )
         if completed_result is not None:
@@ -2632,6 +2645,8 @@ def run_ingestion(
             output,
             identity,
             config,
+            archive,
+            source_snapshot,
             expected_member_count=len(members),
             interrupt_after_cleanup=_interrupt_publication_after_cleanup,
         )
@@ -2820,10 +2835,11 @@ def run_ingestion(
     finally:
         tracker.close()
 
-    _verify_archive_unchanged(archive, source_snapshot, phase="atomic publication")
     _finalize_publication(
         staging,
         output,
+        archive,
+        source_snapshot,
         interrupt_after_cleanup=_interrupt_publication_after_cleanup,
     )
     return {
