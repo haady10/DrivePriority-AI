@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import zipfile
+import zlib
 
 import duckdb
 import pyarrow as pa
@@ -84,24 +85,49 @@ def write_raw_archive(path: Path, members: dict[str, bytes]) -> Path:
     return path
 
 
-def appledouble_metadata(payload: bytes = b"synthetic metadata") -> bytes:
+def appledouble_with_descriptors(
+    descriptors: list[tuple[int, int, int]],
+    payload: bytes = b"",
+) -> bytes:
     header = (
         b"\x00\x05\x16\x07"
         b"\x00\x02\x00\x00"
         b"Mac OS X        "
-        b"\x00\x01"
+        + len(descriptors).to_bytes(2, "big")
     )
-    offset = len(header) + 12
-    entry = (
-        (9).to_bytes(4, "big")
+    table = b"".join(
+        entry_id.to_bytes(4, "big")
         + offset.to_bytes(4, "big")
-        + len(payload).to_bytes(4, "big")
+        + length.to_bytes(4, "big")
+        for entry_id, offset, length in descriptors
     )
-    return header + entry + payload
+    return header + table + payload
+
+
+def appledouble_metadata(payload: bytes = b"synthetic metadata") -> bytes:
+    offset = 26 + 12
+    return appledouble_with_descriptors([(9, offset, len(payload))], payload)
 
 
 def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def rewrite_manifest_evidence(
+    root: Path,
+    mutate,
+    *,
+    refresh_publication_marker: bool,
+) -> None:
+    manifest_path = root / "source_manifest.json"
+    manifest = read_json(manifest_path)
+    mutate(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    if refresh_publication_marker:
+        marker_path = root / "publication_ready.json"
+        marker = read_json(marker_path)
+        marker["manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
 
 
 def read_drive_data(output: Path) -> pa.Table:
@@ -349,8 +375,8 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     manifest = read_json(output / "source_manifest.json")
     assert manifest["source"]["url"] == SOURCE_URL
     assert manifest["source"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
-    assert manifest["manifest_version"] == "1.2.0"
-    assert manifest["software"]["pipeline_version"] == "0.1.3"
+    assert manifest["manifest_version"] == "1.3.0"
+    assert manifest["software"]["pipeline_version"] == "0.1.4"
     assert manifest["identity"]["pipeline"] == manifest["software"]["recovery_identity"]
     assert manifest["identity"]["pipeline"] == pipeline_recovery_identity(
         Path(__file__).resolve().parents[1]
@@ -387,13 +413,14 @@ def test_dry_run_reads_and_hashes_but_creates_no_output(tmp_path: Path) -> None:
 def test_verified_appledouble_metadata_is_excluded_and_inventoried(
     tmp_path: Path,
 ) -> None:
+    metadata_payload = appledouble_metadata()
     archive = write_raw_archive(
         tmp_path / "appledouble.zip",
         {
             "2016-01-01.csv": csv_text(
                 [BASE_HEADER, ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"]]
             ).encode("utf-8"),
-            "__MACOSX/._2016-01-01.csv": appledouble_metadata(),
+            "__MACOSX/._2016-01-01.csv": metadata_payload,
             "README.txt": b"synthetic mixed-member fixture",
         },
     )
@@ -410,19 +437,28 @@ def test_verified_appledouble_metadata_is_excluded_and_inventoried(
     )
     selection = dry_run["archive_member_selection"]
     assert dry_run["member_count"] == 1
-    assert selection["contract_version"] == "1.0.0"
+    assert selection["contract_version"] == "1.1.0"
     assert selection["archive_file_count"] == 3
     assert selection["data_csv_member_count"] == 1
     assert selection["excluded_metadata_member_count"] == 1
     assert selection["non_csv_member_count"] == 1
     assert selection["accounting_complete"] is True
     excluded = selection["excluded_metadata_members"][0]
+    assert excluded["archive_index"] == 1
     assert excluded["filename"] == "__MACOSX/._2016-01-01.csv"
+    assert excluded["uncompressed_bytes"] == len(metadata_payload)
+    assert excluded["crc32"] == f"{zlib.crc32(metadata_payload) & 0xFFFFFFFF:08x}"
+    assert excluded["sha256"] == hashlib.sha256(metadata_payload).hexdigest()
     assert excluded["reason_code"] == "verified_appledouble_metadata"
     assert excluded["evidence"]["magic_hex"] == "00051607"
     assert excluded["evidence"]["version_hex"] == "00020000"
+    assert excluded["evidence"]["descriptors"] == [
+        {"entry_id": 9, "offset": 38, "length": 18}
+    ]
     assert excluded["crc_verified"] is True
-    assert len(excluded["sha256"]) == 64
+    assert selection["data_csv_members"][0]["archive_index"] == 0
+    assert selection["data_csv_members"][0]["filename"] == "2016-01-01.csv"
+    assert selection["non_csv_members"][0]["archive_index"] == 2
     assert selection["non_csv_members"][0]["filename"] == "README.txt"
 
     run_ingestion(
@@ -503,6 +539,144 @@ def test_appledouble_signature_outside_top_level_macosx_is_not_excluded(
             quarter="2016Q1",
             archive=archive,
             output=tmp_path / "misplaced-output",
+            source_url=SOURCE_URL,
+            dry_run=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        pytest.param(
+            appledouble_with_descriptors([]),
+            "descriptor table contains no entries",
+            id="empty-descriptor-table",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(0, 38, 1)], b"x"),
+            "invalid entry ID 0",
+            id="invalid-entry-id",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(1, 38, 1)], b"x"),
+            "prohibited data fork",
+            id="data-fork",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(7, 38, 1)], b"x"),
+            "unused version-2 entry ID 7",
+            id="unused-entry-id",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(16, 38, 1)], b"x"),
+            "unassigned version-2 entry ID 16",
+            id="unassigned-entry-id",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(9, 26, 1)], b"x"),
+            "inside the header or descriptor table",
+            id="payload-offset-inside-table",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(9, 999, 0)]),
+            "offset exceeds member size",
+            id="impossible-offset",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(9, 38, 4)], b"x"),
+            "payload is truncated or unavailable",
+            id="missing-payload",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(9, 50, 4), (2, 52, 4)], b"abcdef"),
+            "overlaps",
+            id="overlapping-payloads",
+        ),
+        pytest.param(
+            appledouble_with_descriptors([(9, 50, 1)], b"x")[:24]
+            + b"\x00\x02"
+            + appledouble_with_descriptors([(9, 50, 1)], b"x")[26:],
+            "truncated descriptor table",
+            id="truncated-descriptor-table",
+        ),
+    ],
+)
+def test_malformed_appledouble_candidate_is_never_excluded(
+    tmp_path: Path, payload: bytes, message: str
+) -> None:
+    archive = write_raw_archive(
+        tmp_path / "malformed-appledouble.zip",
+        {
+            "__MACOSX/._2016-01-01.csv": payload,
+            "2016-01-01.csv": csv_text(
+                [BASE_HEADER, ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"]]
+            ).encode("utf-8"),
+        },
+    )
+
+    with pytest.raises(PipelineError, match=message):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / "malformed-appledouble-output",
+            source_url=SOURCE_URL,
+            dry_run=True,
+        )
+
+
+def test_appledouble_metadata_member_size_limit_precedes_decompression(
+    tmp_path: Path,
+) -> None:
+    metadata = appledouble_metadata(b"metadata payload")
+    archive = write_raw_archive(
+        tmp_path / "oversized-appledouble.zip",
+        {
+            "__MACOSX/._2016-01-01.csv": metadata,
+            "2016-01-01.csv": csv_text(
+                [BASE_HEADER, ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"]]
+            ).encode("utf-8"),
+        },
+    )
+    config_path = write_test_config(tmp_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["processing"]["maximum_member_uncompressed_bytes"] = len(metadata) - 1
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(PipelineError, match="Member exceeds.*__MACOSX"):
+        run_ingestion(
+            config_path=config_path,
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / "oversized-appledouble-output",
+            source_url=SOURCE_URL,
+            dry_run=True,
+        )
+
+
+def test_appledouble_metadata_compression_ratio_limit_precedes_decompression(
+    tmp_path: Path,
+) -> None:
+    archive = write_raw_archive(
+        tmp_path / "compressed-appledouble.zip",
+        {
+            "__MACOSX/._2016-01-01.csv": appledouble_metadata(b"A" * 10000),
+            "2016-01-01.csv": csv_text(
+                [BASE_HEADER, ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"]]
+            ).encode("utf-8"),
+        },
+    )
+    config_path = write_test_config(tmp_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["processing"]["maximum_compression_ratio"] = 2.0
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(PipelineError, match="compression ratio.*__MACOSX"):
+        run_ingestion(
+            config_path=config_path,
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / "compressed-appledouble-output",
             source_url=SOURCE_URL,
             dry_run=True,
         )
@@ -3227,6 +3401,107 @@ def test_complete_manifest_without_marker_rejects_modified_report(
             "(?:Size mismatch|SHA-256 mismatch)"
         ),
     ):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            resume=True,
+        )
+    assert not output.exists()
+    assert not (staging / "publication_ready.json").exists()
+
+
+def test_completed_output_reuse_rejects_missing_archive_selection_evidence(
+    tmp_path: Path,
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "selection-evidence-completed-output"
+    arguments = {
+        "config_path": config,
+        "quarter": "2016Q1",
+        "archive": archive,
+        "output": output,
+        "source_url": SOURCE_URL,
+    }
+    run_ingestion(**arguments)
+    rewrite_manifest_evidence(
+        output,
+        lambda manifest: manifest["source"].pop("archive_member_selection"),
+        refresh_publication_marker=True,
+    )
+
+    with pytest.raises(PipelineError, match="archive member selection evidence"):
+        run_ingestion(**arguments)
+
+
+def test_marker_present_recovery_rejects_altered_archive_selection_count(
+    tmp_path: Path,
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "selection-count-marker-output"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_before_publish=True,
+        )
+    staging = output.with_name(output.name + ".staging")
+
+    def alter_count(manifest):
+        manifest["source"]["archive_member_selection"]["data_csv_member_count"] += 1
+
+    rewrite_manifest_evidence(
+        staging,
+        alter_count,
+        refresh_publication_marker=True,
+    )
+    with pytest.raises(PipelineError, match="fresh source inspection"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            resume=True,
+        )
+    assert not output.exists()
+    assert staging.is_dir()
+
+
+def test_pre_marker_recovery_rejects_modified_archive_member_evidence(
+    tmp_path: Path,
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "selection-member-pre-marker-output"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_complete_manifest=True,
+        )
+    staging = output.with_name(output.name + ".staging")
+
+    def alter_member(manifest):
+        member = manifest["source"]["archive_member_selection"]["data_csv_members"][0]
+        member["uncompressed_bytes"] += 1
+
+    rewrite_manifest_evidence(
+        staging,
+        alter_member,
+        refresh_publication_marker=False,
+    )
+    with pytest.raises(PipelineError, match="fresh source inspection"):
         run_ingestion(
             config_path=config,
             quarter="2016Q1",

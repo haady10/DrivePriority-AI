@@ -72,8 +72,8 @@ FINAL_REPORT_NAMES = {
     "validation_results.json",
     "exceptions.parquet",
 }
-MANIFEST_VERSION = "1.2.0"
-ARCHIVE_MEMBER_SELECTION_VERSION = "1.0.0"
+MANIFEST_VERSION = "1.3.0"
+ARCHIVE_MEMBER_SELECTION_VERSION = "1.1.0"
 APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
 APPLEDOUBLE_VERSION = b"\x00\x02\x00\x00"
 PUBLICATION_MARKER = "publication_ready.json"
@@ -450,22 +450,96 @@ def _verified_appledouble_metadata(
     path = PurePosixPath(info.filename)
     if len(path.parts) < 2 or path.parts[0] != "__MACOSX" or not path.name.startswith("._"):
         return None
+
+    def invalid(reason: str) -> None:
+        raise PipelineError(
+            f"Invalid AppleDouble metadata candidate {info.filename}: {reason}"
+        )
+
     try:
         with source.open(info, "r") as stream:
             header = stream.read(26)
-            if (
-                len(header) != 26
-                or header[:4] != APPLEDOUBLE_MAGIC
-                or header[4:8] != APPLEDOUBLE_VERSION
-            ):
+            if len(header) < 8 or header[:4] != APPLEDOUBLE_MAGIC:
                 return None
+            if header[4:8] != APPLEDOUBLE_VERSION:
+                return None
+            if len(header) != 26:
+                invalid("truncated 26-byte header")
             entry_count = int.from_bytes(header[24:26], "big")
-            if entry_count < 1 or info.file_size < 26 + (entry_count * 12):
-                return None
+            if entry_count == 0:
+                invalid("descriptor table contains no entries")
+            descriptor_bytes_required = entry_count * 12
+            table_end = 26 + descriptor_bytes_required
+            if table_end > info.file_size:
+                invalid("truncated descriptor table")
+            descriptor_bytes = stream.read(descriptor_bytes_required)
+            if len(descriptor_bytes) != descriptor_bytes_required:
+                invalid("declared descriptor table is unavailable")
+
+            descriptors: list[dict[str, int]] = []
+            entry_ids: set[int] = set()
+            occupied_ranges: list[tuple[int, int, int]] = []
+            for descriptor_index in range(entry_count):
+                start = descriptor_index * 12
+                entry_id = int.from_bytes(descriptor_bytes[start : start + 4], "big")
+                entry_offset = int.from_bytes(
+                    descriptor_bytes[start + 4 : start + 8], "big"
+                )
+                entry_length = int.from_bytes(
+                    descriptor_bytes[start + 8 : start + 12], "big"
+                )
+                if entry_id == 0:
+                    invalid(f"descriptor {descriptor_index} uses invalid entry ID 0")
+                if entry_id == 1:
+                    invalid(f"descriptor {descriptor_index} contains a prohibited data fork")
+                if entry_id == 7:
+                    invalid(f"descriptor {descriptor_index} uses unused version-2 entry ID 7")
+                if 15 < entry_id < 0x80000000:
+                    invalid(
+                        f"descriptor {descriptor_index} uses unassigned version-2 "
+                        f"entry ID {entry_id}"
+                    )
+                if entry_id in entry_ids:
+                    invalid(f"duplicate entry ID {entry_id}")
+                entry_ids.add(entry_id)
+                if entry_offset < table_end:
+                    invalid(
+                        f"entry ID {entry_id} payload begins inside the header or descriptor table"
+                    )
+                if entry_offset > info.file_size:
+                    invalid(f"entry ID {entry_id} offset exceeds member size")
+                if entry_length > info.file_size - entry_offset:
+                    invalid(f"entry ID {entry_id} payload is truncated or unavailable")
+                descriptors.append(
+                    {
+                        "entry_id": entry_id,
+                        "offset": entry_offset,
+                        "length": entry_length,
+                    }
+                )
+                if entry_length:
+                    occupied_ranges.append(
+                        (entry_offset, entry_offset + entry_length, entry_id)
+                    )
+
+            occupied_ranges.sort()
+            for previous, current in zip(
+                occupied_ranges, occupied_ranges[1:], strict=False
+            ):
+                if current[0] < previous[1]:
+                    invalid(
+                        f"entry ID {previous[2]} overlaps entry ID {current[2]}"
+                    )
+
             digest = hashlib.sha256()
             digest.update(header)
+            digest.update(descriptor_bytes)
+            bytes_read = table_end
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
+                bytes_read += len(chunk)
+            if bytes_read != info.file_size:
+                invalid("decompressed member size does not match ZIP metadata")
     except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
         raise PipelineError(
             f"Cannot verify AppleDouble metadata member {info.filename}: {exc}"
@@ -483,7 +557,10 @@ def _verified_appledouble_metadata(
             "path_rule": "top_level___MACOSX_with_dot_underscore_basename",
             "magic_hex": APPLEDOUBLE_MAGIC.hex(),
             "version_hex": APPLEDOUBLE_VERSION.hex(),
+            "header_environment_hex": header[8:24].hex(),
             "entry_count": entry_count,
+            "descriptor_table_end": table_end,
+            "descriptors": descriptors,
         },
     }
 
@@ -495,6 +572,11 @@ def _archive_member_selection_report(
         "contract_version": archive_inventory["selection_contract_version"],
         "archive_file_count": archive_inventory["archive_file_count"],
         "data_csv_member_count": archive_inventory["member_count"],
+        "data_csv_compressed_bytes": archive_inventory["data_csv_compressed_bytes"],
+        "data_csv_uncompressed_bytes": archive_inventory[
+            "data_csv_uncompressed_bytes"
+        ],
+        "data_csv_members": archive_inventory["data_csv_members"],
         "excluded_metadata_member_count": archive_inventory[
             "excluded_metadata_member_count"
         ],
@@ -535,6 +617,14 @@ def inspect_archive(
             raise PipelineError(
                 "Archive uncompressed size exceeds the configured total expansion limit"
             )
+        for info in file_infos:
+            if info.file_size > maximum_member_bytes:
+                raise PipelineError(f"Member exceeds configured size limit: {info.filename}")
+            ratio = info.file_size / max(info.compress_size, 1)
+            if ratio > maximum_ratio:
+                raise PipelineError(
+                    f"Member compression ratio {ratio:.1f} exceeds limit for {info.filename}"
+                )
         csv_infos: list[tuple[int, zipfile.ZipInfo]] = []
         excluded_metadata_members: list[dict[str, Any]] = []
         non_csv_members: list[dict[str, Any]] = []
@@ -564,13 +654,6 @@ def inspect_archive(
             raise PipelineError("Archive contains duplicate CSV member names")
 
         for archive_index, info in sorted(csv_infos, key=lambda item: (item[1].filename.casefold(), item[0])):
-            if info.file_size > maximum_member_bytes:
-                raise PipelineError(f"Member exceeds configured size limit: {info.filename}")
-            ratio = info.file_size / max(info.compress_size, 1)
-            if ratio > maximum_ratio:
-                raise PipelineError(
-                    f"Member compression ratio {ratio:.1f} exceeds limit for {info.filename}"
-                )
             try:
                 with source.open(info, "r") as binary:
                     header_bytes = binary.readline()
@@ -594,11 +677,27 @@ def inspect_archive(
             members.append(MemberPlan(archive_index, info, analysis))
 
     selection_count = len(members) + len(excluded_metadata_members) + len(non_csv_members)
+    data_csv_members = [
+        {
+            "archive_index": member.archive_index,
+            "filename": member.info.filename,
+            "compressed_bytes": member.info.compress_size,
+            "uncompressed_bytes": member.info.file_size,
+            "crc32": f"{member.info.CRC:08x}",
+            "header_signature": member.analysis.signature,
+        }
+        for member in members
+    ]
     inventory = {
         "selection_contract_version": ARCHIVE_MEMBER_SELECTION_VERSION,
         "member_count": len(members),
         "archive_file_count": len(file_infos),
         "total_uncompressed_bytes": total_uncompressed_bytes,
+        "data_csv_compressed_bytes": sum(
+            member.info.compress_size for member in members
+        ),
+        "data_csv_uncompressed_bytes": sum(member.info.file_size for member in members),
+        "data_csv_members": data_csv_members,
         "excluded_metadata_member_count": len(excluded_metadata_members),
         "excluded_metadata_compressed_bytes": sum(
             int(item["compressed_bytes"]) for item in excluded_metadata_members
@@ -1000,6 +1099,7 @@ def _verify_completed_manifest(
     root: Path,
     manifest: Mapping[str, Any],
     identity: Mapping[str, Any],
+    expected_archive_member_selection: Mapping[str, Any],
     *,
     require_publication_marker: bool = True,
 ) -> list[str]:
@@ -1010,6 +1110,20 @@ def _verify_completed_manifest(
         errors.append("manifest status is not complete")
     if manifest.get("identity") != dict(identity):
         errors.append("manifest identity mismatch")
+    source = manifest.get("source")
+    if not isinstance(source, Mapping):
+        errors.append("manifest source provenance is missing or invalid")
+    else:
+        recorded_selection = source.get("archive_member_selection")
+        if not isinstance(recorded_selection, Mapping):
+            errors.append("archive member selection evidence is missing or invalid")
+        else:
+            if recorded_selection.get("contract_version") != ARCHIVE_MEMBER_SELECTION_VERSION:
+                errors.append("archive member selection contract version mismatch")
+            if dict(recorded_selection) != dict(expected_archive_member_selection):
+                errors.append(
+                    "archive member selection evidence does not match fresh source inspection"
+                )
     outputs = manifest.get("outputs")
     if not isinstance(outputs, list):
         return [*errors, "manifest outputs must be a nonempty list"]
@@ -1060,7 +1174,11 @@ def _verify_completed_manifest(
     return errors
 
 
-def _verify_existing_output(output: Path, identity: Mapping[str, Any]) -> dict[str, Any]:
+def _verify_existing_output(
+    output: Path,
+    identity: Mapping[str, Any],
+    expected_archive_member_selection: Mapping[str, Any],
+) -> dict[str, Any]:
     manifest_path = output / "source_manifest.json"
     if not manifest_path.is_file():
         raise PipelineError("Output exists but has no source_manifest.json; refusing overwrite")
@@ -1070,7 +1188,12 @@ def _verify_existing_output(output: Path, identity: Mapping[str, Any]) -> dict[s
             "Existing output does not match this archive, quarter, URL, configuration, "
             "and pipeline identity"
         )
-    errors = _verify_completed_manifest(output, manifest, identity)
+    errors = _verify_completed_manifest(
+        output,
+        manifest,
+        identity,
+        expected_archive_member_selection,
+    )
     if errors:
         raise PipelineError("Existing output verification failed: " + "; ".join(errors))
     return {"status": "verified_existing", "output": str(output), "manifest": manifest}
@@ -1928,6 +2051,7 @@ def _publish_completed_staging(
     identity: Mapping[str, Any],
     archive: Path,
     source_snapshot: Mapping[str, Any],
+    expected_archive_member_selection: Mapping[str, Any],
     *,
     interrupt_after_cleanup: str | None = None,
 ) -> dict[str, Any] | None:
@@ -1941,7 +2065,12 @@ def _publish_completed_staging(
         return None
     if not (staging / PUBLICATION_MARKER).is_file():
         return None
-    errors = _verify_completed_manifest(staging, manifest, identity)
+    errors = _verify_completed_manifest(
+        staging,
+        manifest,
+        identity,
+        expected_archive_member_selection,
+    )
     if errors:
         raise PipelineError("Completed staging verification failed: " + "; ".join(errors))
     _finalize_publication(
@@ -1969,6 +2098,7 @@ def _recover_completed_manifest_without_marker(
     config: Mapping[str, Any],
     archive: Path,
     source_snapshot: Mapping[str, Any],
+    expected_archive_member_selection: Mapping[str, Any],
     *,
     expected_member_count: int,
     interrupt_after_cleanup: str | None = None,
@@ -2004,6 +2134,7 @@ def _recover_completed_manifest_without_marker(
         staging,
         manifest,
         identity,
+        expected_archive_member_selection,
         require_publication_marker=False,
     )
     if len(completed) != expected_member_count:
@@ -2054,6 +2185,7 @@ def _recover_completed_manifest_without_marker(
         identity,
         archive,
         source_snapshot,
+        expected_archive_member_selection,
         interrupt_after_cleanup=interrupt_after_cleanup,
     )
     if result is None:
@@ -2691,6 +2823,7 @@ def run_ingestion(
     except OSError as exc:
         raise PipelineError(f"Cannot establish pipeline recovery identity: {exc}") from exc
     members, archive_inventory = inspect_archive(archive, config)
+    archive_member_selection = _archive_member_selection_report(archive_inventory)
     _verify_archive_unchanged(archive, source_snapshot, phase="archive inspection")
     source_assessment = _assess_source_inventory(
         config,
@@ -2719,9 +2852,7 @@ def run_ingestion(
             "archive": str(archive),
             "output": str(output),
             "member_count": len(members),
-            "archive_member_selection": _archive_member_selection_report(
-                archive_inventory
-            ),
+            "archive_member_selection": archive_member_selection,
             "smart_column_count": len(smart_columns),
             "source_inventory": source_assessment,
             "intended_operations": [
@@ -2731,7 +2862,7 @@ def run_ingestion(
             ],
         }
     if output.exists():
-        return _verify_existing_output(output, identity)
+        return _verify_existing_output(output, identity, archive_member_selection)
     output.parent.mkdir(parents=True, exist_ok=True)
     disk_preflight = _disk_space_preflight(output.parent, archive_inventory, config)
     staging_suffix = str(config["recovery"].get("staging_suffix", ".staging"))
@@ -2746,6 +2877,7 @@ def run_ingestion(
             identity,
             archive,
             source_snapshot,
+            archive_member_selection,
             interrupt_after_cleanup=_interrupt_publication_after_cleanup,
         )
         if completed_result is not None:
@@ -2757,6 +2889,7 @@ def run_ingestion(
             config,
             archive,
             source_snapshot,
+            archive_member_selection,
             expected_member_count=len(members),
             interrupt_after_cleanup=_interrupt_publication_after_cleanup,
         )
@@ -2903,9 +3036,7 @@ def run_ingestion(
                 "download_performed_by_pipeline": False,
                 "member_count": archive_inventory["member_count"],
                 "members": member_reports,
-                "archive_member_selection": _archive_member_selection_report(
-                    archive_inventory
-                ),
+                "archive_member_selection": archive_member_selection,
                 "approved_inventory_evidence": source_assessment,
             },
             "assigned_quarter": quarter,
