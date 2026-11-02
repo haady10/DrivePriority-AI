@@ -989,66 +989,127 @@ def _checkpoint_artifacts(staging: Path, relative_paths: Sequence[str]) -> list[
 
 
 def _checkpoint_evidence_summary(
-    staging: Path, relative_paths: Sequence[str]
+    staging: Path,
+    relative_paths: Sequence[str],
+    connection: Any,
 ) -> dict[str, Any]:
     data_rows = 0
     exception_rows = 0
     issue_codes: Counter[str] = Counter()
-    quarantined_evidence_ids: set[str] = set()
-    all_evidence_ids: set[str] = set()
-    raw_copy_counts: Counter[str] = Counter()
-    missing_evidence_links = 0
-    field_issue_rows = 0
-    for relative in sorted(relative_paths):
-        path = staging / relative
-        parquet_file = pq.ParquetFile(path)
-        if relative.startswith("data/"):
-            data_rows += parquet_file.metadata.num_rows
-            continue
-        if not relative.startswith("exception_parts/"):
-            continue
-        for batch in parquet_file.iter_batches(
-            batch_size=8192,
-            columns=[
-                "exception_code",
-                "row_disposition",
-                "row_evidence_id",
-                "raw_record_json",
-                "column_name",
-            ],
-        ):
-            for row in batch.to_pylist():
-                exception_rows += 1
-                issue_codes[str(row["exception_code"])] += 1
-                evidence_id = row.get("row_evidence_id")
-                if not evidence_id:
-                    missing_evidence_links += 1
-                    continue
-                all_evidence_ids.add(str(evidence_id))
-                if row.get("row_disposition") == "quarantined":
-                    quarantined_evidence_ids.add(str(evidence_id))
-                if row.get("raw_record_json") is not None:
-                    raw_copy_counts[str(evidence_id)] += 1
-                if row.get("column_name") is not None:
-                    field_issue_rows += 1
-    duplicate_or_missing_raw_evidence = sum(
-        raw_copy_counts.get(evidence_id, 0) != 1
-        for evidence_id in all_evidence_ids
+    severity_counts: Counter[str] = Counter()
+    audit_table = "_drivepriority_checkpoint_evidence"
+    batch_view = "_drivepriority_checkpoint_evidence_batch"
+    connection.execute(f"DROP TABLE IF EXISTS {audit_table}")
+    connection.execute(
+        f"""
+        CREATE TEMP TABLE {audit_table} (
+            row_disposition VARCHAR,
+            row_evidence_id VARCHAR,
+            has_raw_record BOOLEAN,
+            has_column_name BOOLEAN
+        )
+        """
     )
+    try:
+        for relative in sorted(relative_paths):
+            path = staging / relative
+            parquet_file = pq.ParquetFile(path)
+            if relative.startswith("data/"):
+                data_rows += parquet_file.metadata.num_rows
+                continue
+            if not relative.startswith("exception_parts/"):
+                continue
+            for batch in parquet_file.iter_batches(
+                batch_size=8192,
+                columns=[
+                    "exception_code",
+                    "severity",
+                    "row_disposition",
+                    "row_evidence_id",
+                    "raw_record_json",
+                    "column_name",
+                ],
+            ):
+                exception_rows += batch.num_rows
+                issue_codes.update(
+                    str(value)
+                    for value in batch.column(
+                        batch.schema.get_field_index("exception_code")
+                    ).to_pylist()
+                )
+                severity_counts.update(
+                    str(value)
+                    for value in batch.column(
+                        batch.schema.get_field_index("severity")
+                    ).to_pylist()
+                )
+                connection.register(batch_view, batch)
+                try:
+                    connection.execute(
+                        f"""
+                        INSERT INTO {audit_table}
+                        SELECT row_disposition, row_evidence_id,
+                               raw_record_json IS NOT NULL,
+                               column_name IS NOT NULL
+                        FROM {batch_view}
+                        """
+                    )
+                finally:
+                    connection.unregister(batch_view)
+
+        (
+            quarantined_evidence_records,
+            linked_evidence_records,
+            missing_evidence_links,
+            field_issue_rows,
+        ) = connection.execute(
+            f"""
+            SELECT count(DISTINCT row_evidence_id) FILTER (
+                       WHERE row_disposition = 'quarantined'
+                         AND row_evidence_id IS NOT NULL
+                         AND row_evidence_id <> ''
+                   ),
+                   count(DISTINCT row_evidence_id) FILTER (
+                       WHERE row_evidence_id IS NOT NULL AND row_evidence_id <> ''
+                   ),
+                   count(*) FILTER (
+                       WHERE row_evidence_id IS NULL OR row_evidence_id = ''
+                   ),
+                   count(*) FILTER (WHERE has_column_name)
+            FROM {audit_table}
+            """
+        ).fetchone()
+        duplicate_or_missing_raw_evidence = connection.execute(
+            f"""
+            SELECT count(*)
+            FROM (
+                SELECT row_evidence_id
+                FROM {audit_table}
+                WHERE row_evidence_id IS NOT NULL AND row_evidence_id <> ''
+                GROUP BY row_evidence_id
+                HAVING count(*) FILTER (WHERE has_raw_record) <> 1
+            ) AS violations
+            """
+        ).fetchone()[0]
+    finally:
+        connection.execute(f"DROP TABLE IF EXISTS {audit_table}")
     return {
         "data_rows": data_rows,
         "exception_rows": exception_rows,
         "issue_code_counts": dict(sorted(issue_codes.items())),
-        "quarantined_evidence_records": len(quarantined_evidence_ids),
-        "linked_evidence_records": len(all_evidence_ids),
-        "missing_evidence_links": missing_evidence_links,
-        "raw_evidence_copy_violations": duplicate_or_missing_raw_evidence,
-        "field_issue_rows": field_issue_rows,
+        "issue_severity_counts": dict(sorted(severity_counts.items())),
+        "quarantined_evidence_records": int(quarantined_evidence_records),
+        "linked_evidence_records": int(linked_evidence_records),
+        "missing_evidence_links": int(missing_evidence_links),
+        "raw_evidence_copy_violations": int(duplicate_or_missing_raw_evidence),
+        "field_issue_rows": int(field_issue_rows),
     }
 
 
 def _verify_completed_checkpoints(
-    staging: Path, completed: Mapping[int, Mapping[str, Any]]
+    staging: Path,
+    completed: Mapping[int, Mapping[str, Any]],
+    connection: Any,
 ) -> None:
     errors: list[str] = []
     resolved_staging = staging.resolve()
@@ -1099,7 +1160,9 @@ def _verify_completed_checkpoints(
         if len(errors) != member_error_count:
             continue
         try:
-            actual_summary = _checkpoint_evidence_summary(staging, relative_paths)
+            actual_summary = _checkpoint_evidence_summary(
+                staging, relative_paths, connection
+            )
         except (OSError, ValueError, pa.ArrowException) as exc:
             errors.append(
                 f"member {member_index}: cannot reconcile checkpoint evidence: {exc}"
@@ -1115,6 +1178,12 @@ def _verify_completed_checkpoints(
             errors.append(f"member {member_index}: canonical checkpoint row mismatch")
         if actual_summary["issue_code_counts"] != expected_issue_codes:
             errors.append(f"member {member_index}: exception checkpoint count mismatch")
+        expected_severities = {
+            str(severity): int(count)
+            for severity, count in stats.get("issue_severity_counts", {}).items()
+        }
+        if actual_summary["issue_severity_counts"] != expected_severities:
+            errors.append(f"member {member_index}: exception severity count mismatch")
         if actual_summary["quarantined_evidence_records"] != int(
             stats.get("quarantined_rows", -1)
         ):
@@ -1657,7 +1726,7 @@ def _process_member(
             "relative_paths": relative_paths,
             "artifacts": _checkpoint_artifacts(staging, relative_paths),
             "evidence_summary": _checkpoint_evidence_summary(
-                staging, relative_paths
+                staging, relative_paths, tracker.connection
             ),
         }
         tracker.complete_member(member_sequence, stats, file_details)
@@ -2153,7 +2222,6 @@ def _readback_failure_evidence(
             errors.append(f"{path.relative_to(staging).as_posix()}: {type(exc).__name__}")
 
     exceptions_path = staging / "exceptions.parquet"
-    seen_quarantined_evidence: set[str] = set()
     if exceptions_path.is_file():
         try:
             parquet_file = pq.ParquetFile(exceptions_path)
@@ -2162,17 +2230,13 @@ def _readback_failure_evidence(
                 for row in rows:
                     if row.get("row_disposition") != "quarantined":
                         continue
-                    evidence_id = row.get("row_evidence_id")
                     raw_json = row.get("raw_record_json")
-                    if (
-                        not isinstance(evidence_id, str)
-                        or evidence_id in seen_quarantined_evidence
-                        or not isinstance(raw_json, str)
-                    ):
+                    if not isinstance(raw_json, str):
                         continue
-                    seen_quarantined_evidence.add(evidence_id)
+                    if row.get("exception_code") == "malformed_column_count":
+                        continue
                     payload = json.loads(raw_json)
-                    if not isinstance(payload, dict) or "headers" in payload:
+                    if not isinstance(payload, dict):
                         continue
                     normalized = {normalize_header(str(key)): value for key, value in payload.items()}
                     raw_flag = normalized.get("failure")
@@ -2468,7 +2532,7 @@ def run_ingestion(
     )
     try:
         completed = tracker.completed_members()
-        _verify_completed_checkpoints(staging, completed)
+        _verify_completed_checkpoints(staging, completed, tracker.connection)
         _cleanup_incomplete_files(staging, completed)
         rows_seen = sum(int(member["stats"].get("input_rows", 0)) for member in completed.values())
         with zipfile.ZipFile(archive, "r") as source:

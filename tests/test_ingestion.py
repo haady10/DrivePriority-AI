@@ -2869,3 +2869,139 @@ def test_large_same_serial_identity_group_avoids_pairwise_candidate_expansion(
     assert len(collisions) == row_count - 1
     assert collisions[0].source_record_number == 2
     assert collisions[-1].source_record_number == row_count
+
+
+def test_checkpoint_severity_tamper_cannot_downgrade_review_status(
+    tmp_path: Path,
+) -> None:
+    archive = write_archive(
+        tmp_path / "severity-checkpoint.zip",
+        {
+            "a.csv": [
+                [*BASE_HEADER, "unsupported_field"],
+                ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0", "evidence"],
+            ],
+            "b.csv": [
+                BASE_HEADER,
+                ["2016-01-02", "SN-2", "Model", "Vendor", "1000", "0"],
+            ],
+        },
+    )
+    config = write_test_config(tmp_path, batch_rows=1)
+    output = tmp_path / "severity-checkpoint-output"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_rows=2,
+        )
+    staging = output.with_name(output.name + ".staging")
+    connection = duckdb.connect(str(staging / "state.duckdb"))
+    try:
+        row = connection.execute(
+            "SELECT stats_json FROM completed_members WHERE member_index = 0"
+        ).fetchone()
+        assert row is not None
+        stats = json.loads(row[0])
+        assert stats["issue_severity_counts"] == {"error": 1}
+        stats["issue_severity_counts"] = {}
+        connection.execute(
+            "UPDATE completed_members SET stats_json = ? WHERE member_index = 0",
+            [json.dumps(stats, sort_keys=True, separators=(",", ":"))],
+        )
+    finally:
+        connection.close()
+
+    with pytest.raises(PipelineError, match="exception severity count mismatch"):
+        resume_checkpoint(archive, config, output)
+    assert not output.exists()
+
+
+def test_legitimate_headers_column_does_not_hide_quarantined_failure_evidence(
+    tmp_path: Path,
+) -> None:
+    archive = write_archive(
+        tmp_path / "headers-source-column.zip",
+        {
+            "day.csv": [
+                [*BASE_HEADER, "headers"],
+                ["2016-01-01", "", "Model", "Vendor", "1000", "1", "legitimate"],
+                ["2016-01-02", "SN-2", "Model", "Vendor", "1000", "0", "also-source"],
+            ]
+        },
+    )
+    output = tmp_path / "headers-source-column-output"
+
+    result = run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    assert result["validation_status"] == "requires_review"
+    validation = read_json(output / "validation_results.json")
+    reconciliation = next(
+        check
+        for check in validation["checks"]
+        if check["name"] == "failure_flag_source_to_output_reconciliation"
+    )
+    assert reconciliation["passed"] is True
+    assert reconciliation["readback"]["quarantined_counts"] == {"1": 1}
+    exception_rows = pq.read_table(output / "exceptions.parquet").to_pylist()
+    raw_row = next(row for row in exception_rows if row["raw_record_json"] is not None)
+    assert json.loads(raw_row["raw_record_json"])["headers"] == "legitimate"
+
+
+def test_exception_heavy_evidence_reconciliation_remains_complete(
+    tmp_path: Path,
+) -> None:
+    quarantine_rows = 2_000
+    rows = [BASE_HEADER]
+    rows.extend(
+        [
+            "2016-01-01",
+            "",
+            "Model",
+            hashlib.sha256(f"vendor-{index}".encode("ascii")).hexdigest(),
+            "1000",
+            str(index % 2),
+        ]
+        for index in range(quarantine_rows)
+    )
+    rows.append(["2016-01-02", "SN-OK", "Model", "Vendor", "1000", "0"])
+    archive = write_archive(tmp_path / "exception-heavy.zip", {"day.csv": rows})
+    output = tmp_path / "exception-heavy-output"
+
+    result = run_ingestion(
+        config_path=write_test_config(
+            tmp_path,
+            batch_rows=257,
+            exception_batch_rows=31,
+            exception_batch_bytes=4096,
+        ),
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    assert result["validation_status"] == "requires_review"
+    quality = read_json(output / "quality_report.json")
+    assert quality["counts"]["quarantined_rows"] == quarantine_rows
+    assert quality["counts"]["issue_severity_counts"] == {"error": quarantine_rows}
+    validation = read_json(output / "validation_results.json")
+    reconciliation = next(
+        check
+        for check in validation["checks"]
+        if check["name"] == "failure_flag_source_to_output_reconciliation"
+    )
+    assert reconciliation["passed"] is True
+    assert reconciliation["readback"]["quarantined_counts"] == {
+        "0": quarantine_rows // 2,
+        "1": quarantine_rows // 2,
+    }
