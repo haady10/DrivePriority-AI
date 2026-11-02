@@ -890,7 +890,11 @@ def _verify_published_schema_contract(
 
 
 def _verify_completed_manifest(
-    root: Path, manifest: Mapping[str, Any], identity: Mapping[str, Any]
+    root: Path,
+    manifest: Mapping[str, Any],
+    identity: Mapping[str, Any],
+    *,
+    require_publication_marker: bool = True,
 ) -> list[str]:
     errors: list[str] = []
     if manifest.get("manifest_version") != MANIFEST_VERSION:
@@ -939,12 +943,13 @@ def _verify_completed_manifest(
     errors.extend(
         _verify_published_schema_contract(root, manifest.get("schema_contract"))
     )
-    try:
-        _state, marker_manifest = _validate_publication_marker(root, identity)
-        if marker_manifest != dict(manifest):
-            errors.append("publication marker manifest content mismatch")
-    except (PipelineError, OSError, ValueError, json.JSONDecodeError) as exc:
-        errors.append(f"publication marker verification failed: {exc}")
+    if require_publication_marker:
+        try:
+            _state, marker_manifest = _validate_publication_marker(root, identity)
+            if marker_manifest != dict(manifest):
+                errors.append("publication marker manifest content mismatch")
+        except (PipelineError, OSError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(f"publication marker verification failed: {exc}")
     return errors
 
 
@@ -1822,6 +1827,8 @@ def _publish_completed_staging(
     manifest = read_json(manifest_path)
     if manifest.get("status") != "complete" or manifest.get("identity") != dict(identity):
         return None
+    if not (staging / PUBLICATION_MARKER).is_file():
+        return None
     errors = _verify_completed_manifest(staging, manifest, identity)
     if errors:
         raise PipelineError("Completed staging verification failed: " + "; ".join(errors))
@@ -1839,6 +1846,101 @@ def _publish_completed_staging(
         "quarantined_rows": processing["quarantined_rows"],
         "validation_status": manifest["validation"]["status"],
     }
+
+
+def _recover_completed_manifest_without_marker(
+    staging: Path,
+    output: Path,
+    identity: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    expected_member_count: int,
+    interrupt_after_cleanup: str | None = None,
+) -> dict[str, Any] | None:
+    """Verify a complete pre-marker staging transaction and finish publication."""
+
+    marker_path = staging / PUBLICATION_MARKER
+    manifest_path = staging / "source_manifest.json"
+    state_path = staging / "run_state.json"
+    if marker_path.exists() or not manifest_path.is_file() or not state_path.is_file():
+        return None
+    state = _validate_state(staging, identity)
+    manifest = read_json(manifest_path)
+    if manifest.get("status") != "complete" or manifest.get("identity") != dict(identity):
+        return None
+    if state.get("status") != "processing":
+        raise PipelineError(
+            "Complete pre-publication staging has an invalid processing state; use --restart"
+        )
+
+    tracker = DuplicateTracker(
+        staging / "state.duckdb",
+        memory_limit=str(config["processing"]["duckdb_memory_limit"]),
+        threads=int(config["processing"]["worker_threads"]),
+    )
+    try:
+        completed = tracker.completed_members()
+        _verify_completed_checkpoints(staging, completed, tracker.connection)
+    finally:
+        tracker.close()
+
+    errors = _verify_completed_manifest(
+        staging,
+        manifest,
+        identity,
+        require_publication_marker=False,
+    )
+    if len(completed) != expected_member_count:
+        errors.append("complete manifest member count does not match verified checkpoints")
+    aggregate = _aggregate_completed(completed)
+    processing = manifest.get("processing")
+    if not isinstance(processing, Mapping):
+        errors.append("complete manifest processing metadata is invalid")
+    else:
+        expected_processing = {
+            "input_rows": aggregate.input_rows,
+            "output_rows": aggregate.output_rows,
+            "quarantined_rows": aggregate.quarantined_rows,
+            "exception_rows": sum(
+                int(member.get("files", {}).get("evidence_summary", {}).get("exception_rows", 0))
+                for member in completed.values()
+            ),
+        }
+        for field, expected_value in expected_processing.items():
+            if processing.get(field) != expected_value:
+                errors.append(f"complete manifest processing.{field} mismatch")
+
+    try:
+        quality_counts = read_json(staging / "quality_report.json").get("counts")
+        validation_report = read_json(staging / "validation_results.json")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        errors.append(f"cannot verify complete pre-publication reports: {type(exc).__name__}")
+    else:
+        if quality_counts != aggregate.to_dict():
+            errors.append("complete quality report does not match checkpoint statistics")
+        if manifest.get("validation") != validation_report:
+            errors.append("complete manifest validation does not match validation report")
+        if (
+            aggregate.issue_severity_counts.get("error", 0) > 0
+            and validation_report.get("status") not in {"failed", "requires_review"}
+        ):
+            errors.append("error-severity evidence was not retained in admission status")
+
+    if errors:
+        raise PipelineError(
+            "Complete pre-marker staging verification failed; use --restart: "
+            + "; ".join(errors)
+        )
+    _write_publication_marker(staging, identity)
+    result = _publish_completed_staging(
+        staging,
+        output,
+        identity,
+        interrupt_after_cleanup=interrupt_after_cleanup,
+    )
+    if result is None:
+        raise PipelineError("Verified pre-marker staging could not be published safely")
+    return result
 
 
 def _aggregate_completed(completed: Mapping[int, Mapping[str, Any]]) -> QualityStats:
@@ -2444,6 +2546,7 @@ def run_ingestion(
     resume: bool = False,
     restart: bool = False,
     _interrupt_after_rows: int | None = None,
+    _interrupt_after_complete_manifest: bool = False,
     _interrupt_before_publish: bool = False,
     _interrupt_publication_after_cleanup: str | None = None,
 ) -> dict[str, Any]:
@@ -2520,6 +2623,16 @@ def run_ingestion(
             staging,
             output,
             identity,
+            interrupt_after_cleanup=_interrupt_publication_after_cleanup,
+        )
+        if completed_result is not None:
+            return completed_result
+        completed_result = _recover_completed_manifest_without_marker(
+            staging,
+            output,
+            identity,
+            config,
+            expected_member_count=len(members),
             interrupt_after_cleanup=_interrupt_publication_after_cleanup,
         )
         if completed_result is not None:
@@ -2696,6 +2809,10 @@ def run_ingestion(
         }
         _verify_archive_unchanged(archive, source_snapshot, phase="manifest publication")
         write_json_atomic(staging / "source_manifest.json", manifest)
+        if _interrupt_after_complete_manifest:
+            raise IngestionInterrupted(
+                "Controlled interruption after complete manifest and before publication marker"
+            )
         _verify_archive_unchanged(archive, source_snapshot, phase="publication marker creation")
         _write_publication_marker(staging, identity)
         if _interrupt_before_publish:

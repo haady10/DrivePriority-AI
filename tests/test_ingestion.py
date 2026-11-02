@@ -3005,3 +3005,94 @@ def test_exception_heavy_evidence_reconciliation_remains_complete(
         "0": quarantine_rows // 2,
         "1": quarantine_rows // 2,
     }
+
+
+def test_complete_manifest_without_marker_resumes_verified_publication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "pre-marker-interruption-output"
+    with pytest.raises(IngestionInterrupted, match="before publication marker"):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_complete_manifest=True,
+        )
+
+    staging = output.with_name(output.name + ".staging")
+    assert (staging / "run_state.json").is_file()
+    assert (staging / "source_manifest.json").is_file()
+    assert not (staging / "publication_ready.json").exists()
+    manifest_sha256 = hashlib.sha256(
+        (staging / "source_manifest.json").read_bytes()
+    ).hexdigest()
+    data_hashes = {
+        path.relative_to(staging).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (staging / "data").rglob("*.parquet")
+    }
+
+    monkeypatch.setattr(
+        ingest_module,
+        "_process_member",
+        lambda *args, **kwargs: pytest.fail("verified publication recovery reprocessed a member"),
+    )
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        resume=True,
+    )
+
+    assert result["status"] == "complete"
+    assert (output / "publication_ready.json").is_file()
+    assert hashlib.sha256((output / "source_manifest.json").read_bytes()).hexdigest() == manifest_sha256
+    assert {
+        path.relative_to(output).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (output / "data").rglob("*.parquet")
+    } == data_hashes
+
+
+def test_complete_manifest_without_marker_rejects_modified_report(
+    tmp_path: Path,
+) -> None:
+    archive = normal_archive(tmp_path)
+    config = write_test_config(tmp_path)
+    output = tmp_path / "pre-marker-tamper-output"
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_complete_manifest=True,
+        )
+    staging = output.with_name(output.name + ".staging")
+    quality_path = staging / "quality_report.json"
+    quality = read_json(quality_path)
+    quality["counts"]["input_rows"] += 1
+    quality_path.write_text(json.dumps(quality), encoding="utf-8")
+
+    with pytest.raises(
+        PipelineError,
+        match=(
+            "Complete pre-marker staging verification failed.*"
+            "(?:Size mismatch|SHA-256 mismatch)"
+        ),
+    ):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            resume=True,
+        )
+    assert not output.exists()
+    assert not (staging / "publication_ready.json").exists()

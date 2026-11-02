@@ -219,6 +219,8 @@ Completed member transactions are reused only after every recorded Parquet artif
 
 After the complete manifest is written, `publication_ready.json` binds its SHA-256 and recovery identity. This marker remains valid through runtime cleanup and the atomic staging rename, so an interruption after `run_state.json` deletion or a rename failure can be safely resumed without reprocessing or touching unrelated files.
 
+If interruption occurs in the narrower boundary after the complete manifest is durable but before `publication_ready.json` exists, `--resume` does not trust the manifest alone. It requires the original matching `run_state.json`, re-verifies every checkpoint artifact and evidence statistic, reconciles aggregate processing counts and quality/validation reports, verifies the marker-free manifest inventory and actual schema contract, and only then recreates publication readiness. Any inconsistency requires explicit `--restart`.
+
 Use `--restart` only when intentionally discarding a verified matching staging run. Restart refuses staging state belonging to any other archive, URL, quarter, or configuration. It never deletes an existing completed output.
 
 ## Safe reruns
