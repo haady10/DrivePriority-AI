@@ -9,11 +9,12 @@ import csv
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
+import hashlib
 import io
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sys
@@ -71,7 +72,10 @@ FINAL_REPORT_NAMES = {
     "validation_results.json",
     "exceptions.parquet",
 }
-MANIFEST_VERSION = "1.1.0"
+MANIFEST_VERSION = "1.2.0"
+ARCHIVE_MEMBER_SELECTION_VERSION = "1.0.0"
+APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
+APPLEDOUBLE_VERSION = b"\x00\x02\x00\x00"
 PUBLICATION_MARKER = "publication_ready.json"
 RUNTIME_NAMES = {
     "run_state.json",
@@ -436,6 +440,77 @@ def _quarter_within_scope(config: Mapping[str, Any], start: date, end: date) -> 
         )
 
 
+def _verified_appledouble_metadata(
+    source: zipfile.ZipFile,
+    archive_index: int,
+    info: zipfile.ZipInfo,
+) -> dict[str, Any] | None:
+    """Return auditable evidence only for a verified top-level AppleDouble sidecar."""
+
+    path = PurePosixPath(info.filename)
+    if len(path.parts) < 2 or path.parts[0] != "__MACOSX" or not path.name.startswith("._"):
+        return None
+    try:
+        with source.open(info, "r") as stream:
+            header = stream.read(26)
+            if (
+                len(header) != 26
+                or header[:4] != APPLEDOUBLE_MAGIC
+                or header[4:8] != APPLEDOUBLE_VERSION
+            ):
+                return None
+            entry_count = int.from_bytes(header[24:26], "big")
+            if entry_count < 1 or info.file_size < 26 + (entry_count * 12):
+                return None
+            digest = hashlib.sha256()
+            digest.update(header)
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise PipelineError(
+            f"Cannot verify AppleDouble metadata member {info.filename}: {exc}"
+        ) from exc
+    return {
+        "archive_index": archive_index,
+        "filename": info.filename,
+        "compressed_bytes": info.compress_size,
+        "uncompressed_bytes": info.file_size,
+        "crc32": f"{info.CRC:08x}",
+        "crc_verified": True,
+        "sha256": digest.hexdigest(),
+        "reason_code": "verified_appledouble_metadata",
+        "evidence": {
+            "path_rule": "top_level___MACOSX_with_dot_underscore_basename",
+            "magic_hex": APPLEDOUBLE_MAGIC.hex(),
+            "version_hex": APPLEDOUBLE_VERSION.hex(),
+            "entry_count": entry_count,
+        },
+    }
+
+
+def _archive_member_selection_report(
+    archive_inventory: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "contract_version": archive_inventory["selection_contract_version"],
+        "archive_file_count": archive_inventory["archive_file_count"],
+        "data_csv_member_count": archive_inventory["member_count"],
+        "excluded_metadata_member_count": archive_inventory[
+            "excluded_metadata_member_count"
+        ],
+        "excluded_metadata_compressed_bytes": archive_inventory[
+            "excluded_metadata_compressed_bytes"
+        ],
+        "excluded_metadata_uncompressed_bytes": archive_inventory[
+            "excluded_metadata_uncompressed_bytes"
+        ],
+        "excluded_metadata_members": archive_inventory["excluded_metadata_members"],
+        "non_csv_member_count": archive_inventory["non_csv_member_count"],
+        "non_csv_members": archive_inventory["non_csv_members"],
+        "accounting_complete": archive_inventory["selection_accounting_complete"],
+    }
+
+
 def inspect_archive(
     archive: Path, config: Mapping[str, Any]
 ) -> tuple[list[MemberPlan], dict[str, Any]]:
@@ -460,11 +535,28 @@ def inspect_archive(
             raise PipelineError(
                 "Archive uncompressed size exceeds the configured total expansion limit"
             )
-        csv_infos = [
-            (index, info)
-            for index, info in enumerate(source.infolist())
-            if not info.is_dir() and info.filename.lower().endswith(".csv")
-        ]
+        csv_infos: list[tuple[int, zipfile.ZipInfo]] = []
+        excluded_metadata_members: list[dict[str, Any]] = []
+        non_csv_members: list[dict[str, Any]] = []
+        for archive_index, info in enumerate(source.infolist()):
+            if info.is_dir():
+                continue
+            metadata = _verified_appledouble_metadata(source, archive_index, info)
+            if metadata is not None:
+                excluded_metadata_members.append(metadata)
+            elif info.filename.lower().endswith(".csv"):
+                csv_infos.append((archive_index, info))
+            else:
+                non_csv_members.append(
+                    {
+                        "archive_index": archive_index,
+                        "filename": info.filename,
+                        "compressed_bytes": info.compress_size,
+                        "uncompressed_bytes": info.file_size,
+                        "crc32": f"{info.CRC:08x}",
+                        "reason_code": "non_csv_archive_member",
+                    }
+                )
         if not csv_infos:
             raise PipelineError("Archive contains no CSV members")
         names = [info.filename for _, info in csv_infos]
@@ -501,10 +593,23 @@ def inspect_archive(
                 )
             members.append(MemberPlan(archive_index, info, analysis))
 
+    selection_count = len(members) + len(excluded_metadata_members) + len(non_csv_members)
     inventory = {
+        "selection_contract_version": ARCHIVE_MEMBER_SELECTION_VERSION,
         "member_count": len(members),
         "archive_file_count": len(file_infos),
         "total_uncompressed_bytes": total_uncompressed_bytes,
+        "excluded_metadata_member_count": len(excluded_metadata_members),
+        "excluded_metadata_compressed_bytes": sum(
+            int(item["compressed_bytes"]) for item in excluded_metadata_members
+        ),
+        "excluded_metadata_uncompressed_bytes": sum(
+            int(item["uncompressed_bytes"]) for item in excluded_metadata_members
+        ),
+        "excluded_metadata_members": excluded_metadata_members,
+        "non_csv_member_count": len(non_csv_members),
+        "non_csv_members": non_csv_members,
+        "selection_accounting_complete": selection_count == len(file_infos),
         "members": [
             {
                 "archive_index": member.archive_index,
@@ -519,6 +624,8 @@ def inspect_archive(
             for member in members
         ],
     }
+    if not inventory["selection_accounting_complete"]:
+        raise PipelineError("Archive member selection accounting is incomplete")
     return members, inventory
 
 
@@ -2612,6 +2719,9 @@ def run_ingestion(
             "archive": str(archive),
             "output": str(output),
             "member_count": len(members),
+            "archive_member_selection": _archive_member_selection_report(
+                archive_inventory
+            ),
             "smart_column_count": len(smart_columns),
             "source_inventory": source_assessment,
             "intended_operations": [
@@ -2793,6 +2903,9 @@ def run_ingestion(
                 "download_performed_by_pipeline": False,
                 "member_count": archive_inventory["member_count"],
                 "members": member_reports,
+                "archive_member_selection": _archive_member_selection_report(
+                    archive_inventory
+                ),
                 "approved_inventory_evidence": source_assessment,
             },
             "assigned_quarter": quarter,

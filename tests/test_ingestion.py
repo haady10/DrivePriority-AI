@@ -84,6 +84,22 @@ def write_raw_archive(path: Path, members: dict[str, bytes]) -> Path:
     return path
 
 
+def appledouble_metadata(payload: bytes = b"synthetic metadata") -> bytes:
+    header = (
+        b"\x00\x05\x16\x07"
+        b"\x00\x02\x00\x00"
+        b"Mac OS X        "
+        b"\x00\x01"
+    )
+    offset = len(header) + 12
+    entry = (
+        (9).to_bytes(4, "big")
+        + offset.to_bytes(4, "big")
+        + len(payload).to_bytes(4, "big")
+    )
+    return header + entry + payload
+
+
 def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -333,7 +349,8 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     manifest = read_json(output / "source_manifest.json")
     assert manifest["source"]["url"] == SOURCE_URL
     assert manifest["source"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
-    assert manifest["software"]["pipeline_version"] == "0.1.2"
+    assert manifest["manifest_version"] == "1.2.0"
+    assert manifest["software"]["pipeline_version"] == "0.1.3"
     assert manifest["identity"]["pipeline"] == manifest["software"]["recovery_identity"]
     assert manifest["identity"]["pipeline"] == pipeline_recovery_identity(
         Path(__file__).resolve().parents[1]
@@ -365,6 +382,130 @@ def test_dry_run_reads_and_hashes_but_creates_no_output(tmp_path: Path) -> None:
     assert result["member_count"] == 2
     assert not output.exists()
     assert not output.with_name(output.name + ".staging").exists()
+
+
+def test_verified_appledouble_metadata_is_excluded_and_inventoried(
+    tmp_path: Path,
+) -> None:
+    archive = write_raw_archive(
+        tmp_path / "appledouble.zip",
+        {
+            "2016-01-01.csv": csv_text(
+                [BASE_HEADER, ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"]]
+            ).encode("utf-8"),
+            "__MACOSX/._2016-01-01.csv": appledouble_metadata(),
+            "README.txt": b"synthetic mixed-member fixture",
+        },
+    )
+    config = write_test_config(tmp_path)
+    output = tmp_path / "appledouble-output"
+
+    dry_run = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        dry_run=True,
+    )
+    selection = dry_run["archive_member_selection"]
+    assert dry_run["member_count"] == 1
+    assert selection["contract_version"] == "1.0.0"
+    assert selection["archive_file_count"] == 3
+    assert selection["data_csv_member_count"] == 1
+    assert selection["excluded_metadata_member_count"] == 1
+    assert selection["non_csv_member_count"] == 1
+    assert selection["accounting_complete"] is True
+    excluded = selection["excluded_metadata_members"][0]
+    assert excluded["filename"] == "__MACOSX/._2016-01-01.csv"
+    assert excluded["reason_code"] == "verified_appledouble_metadata"
+    assert excluded["evidence"]["magic_hex"] == "00051607"
+    assert excluded["evidence"]["version_hex"] == "00020000"
+    assert excluded["crc_verified"] is True
+    assert len(excluded["sha256"]) == 64
+    assert selection["non_csv_members"][0]["filename"] == "README.txt"
+
+    run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+    manifest_selection = read_json(output / "source_manifest.json")["source"][
+        "archive_member_selection"
+    ]
+    assert manifest_selection == selection
+    assert read_drive_data(output).num_rows == 1
+
+
+def test_appledouble_looking_binary_without_signature_is_not_excluded(
+    tmp_path: Path,
+) -> None:
+    archive = write_raw_archive(
+        tmp_path / "deceptive-appledouble.zip",
+        {
+            "2016-01-01.csv": csv_text(
+                [BASE_HEADER, ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"]]
+            ).encode("utf-8"),
+            "__MACOSX/._2016-01-02.csv": b"\xffnot verified AppleDouble metadata",
+        },
+    )
+
+    with pytest.raises(PipelineError, match="Cannot read header.*__MACOSX"):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / "deceptive-output",
+            source_url=SOURCE_URL,
+            dry_run=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    ["__MACOSX/._legitimate.csv", "__MACOSX/legitimate.csv"],
+)
+def test_legitimate_csv_under_macosx_is_not_excluded(
+    tmp_path: Path, member_name: str
+) -> None:
+    payload = csv_text(
+        [BASE_HEADER, ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"]]
+    ).encode("utf-8")
+    archive = write_raw_archive(tmp_path / "legitimate-macosx.csv.zip", {member_name: payload})
+
+    result = run_ingestion(
+        config_path=write_test_config(tmp_path),
+        quarter="2016Q1",
+        archive=archive,
+        output=tmp_path / "legitimate-output",
+        source_url=SOURCE_URL,
+        dry_run=True,
+    )
+
+    assert result["member_count"] == 1
+    assert result["archive_member_selection"]["excluded_metadata_member_count"] == 0
+    assert result["archive_member_selection"]["accounting_complete"] is True
+
+
+def test_appledouble_signature_outside_top_level_macosx_is_not_excluded(
+    tmp_path: Path,
+) -> None:
+    archive = write_raw_archive(
+        tmp_path / "misplaced-appledouble.zip",
+        {"nested/__MACOSX/._2016-01-01.csv": appledouble_metadata()},
+    )
+
+    with pytest.raises(PipelineError, match="missing required columns|Invalid header"):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / "misplaced-output",
+            source_url=SOURCE_URL,
+            dry_run=True,
+        )
 
 
 def test_quarterly_configuration_cannot_enable_future_labels(tmp_path: Path) -> None:
