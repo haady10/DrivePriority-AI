@@ -116,7 +116,7 @@ The non-Hive `data/2016Q1/` directory is the physical quarter partition. Every P
 
 ### Source manifest
 
-`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, approved-inventory assessment and provenance, complete archive-member selection and exclusions, processed member inventory, original headers, CRC results, configuration and hash, the installed Python implementation/version/cache tag and exact DuckDB/PyArrow/PyYAML versions, Git provenance when available, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, disk-space preflight, row counts, output checksums, validation status, and processing timestamps. Manifest version `1.6.0` and pipeline version `0.2.0` include the evidence-based source-approval contract, bounded historical header support, exact numeric-token evidence, comparison-only identity normalization, and immutable anomaly/revalidation tooling while preserving archive-member-selection contract `1.1.0`; they do not change the canonical SMART data types. Startup requires the installed core dependency versions to match their exact `requirements.txt` locks. The installed runtime identity is hashed into the recovery identity, so a runtime-version change cannot resume staged work or claim completed-output reuse under the prior environment.
+`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, approved-inventory assessment and provenance, complete archive-member selection and exclusions, processed member inventory, original headers, CRC results, configuration and hash, the installed Python implementation/version/cache tag and exact DuckDB/PyArrow/PyYAML versions, Git provenance when available, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, disk-space preflight, row counts, output checksums, validation status, and processing timestamps. Manifest version `1.6.0` and pipeline version `0.3.0` retain the exact scientific data contract while adding five-operator traceability, append-only leader authorization, explicit three-level source evidence, safe handover reporting, and version-aware v0.1.4 revalidation. Startup requires the installed core dependency versions to match their exact `requirements.txt` locks. The installed runtime identity is hashed into the recovery identity, so a runtime-version change cannot resume staged work or claim completed-output reuse under the prior environment.
 
 In a Git checkout, `git_commit`, `pipeline_scoped_dirty`, and `git_metadata_available: true` record the scoped repository state. In a code-only ZIP, no commit is invented: the first two fields are null and `git_metadata_available` is false. ZIP users verify the separately published package SHA-256, the release file-hash inventory, `runtime_source_sha256`, `requirements_sha256`, the configuration SHA-256, and the installed-runtime hash. Missing Git metadata never converts an unavailable source identity into a clean checkout.
 
@@ -250,6 +250,24 @@ Use `--restart` only when intentionally discarding a verified matching staging r
 If the final output already exists, the pipeline verifies its identity, manifest version, publication marker, required artifact set, unique safe paths, exact output membership, and every recorded file size and SHA-256. It also reconciles the schema contract across Parquet, schema report, validation report, and manifest. A matching completed submission returns `verified_existing` without rewriting it. Missing, unlisted, duplicate, unexpected, or inconsistent artifacts stop verification.
 
 Publish a new immutable output directory for a changed archive, configuration, or pipeline revision. Do not overwrite a teammate's submission.
+
+## Round 2 operator and evidence controls
+
+Operator selection is limited to Haady Abdul Jabar, Faheem, Zahid, Sulaiman, and
+Shuhail, but it is traceability rather than authentication. Any recognized operator
+may select any supported quarter. Planning assignments never grant or deny access.
+
+Leader approvals are append-only version 2 records bound to quarter and archive
+SHA-256. Processing authorization does not prove source authenticity. Source evidence
+is recorded as Level 1 local integrity, Level 2 documented official-download evidence,
+or Level 3 independently verified publisher bytes. Level 2 retains the absence of a
+publisher checksum as an explicit limitation. Level 3 is prohibited without a matching
+publisher-issued checksum.
+
+The v0.1.4 compatibility adapter reuses only outputs whose historical manifest,
+inventoried artifacts, hashes, row counts, and Parquet schemas still verify. It records
+the original pipeline version and writes separate analysis and revalidation evidence.
+It never rewrites historical output.
 
 ## Team submission procedure
 

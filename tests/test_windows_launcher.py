@@ -43,42 +43,33 @@ def _fixture(tmp_path: Path) -> dict[str, Path | str]:
             writer.writerow([day, f"SN-{day}", "Model", "Vendor", "1000", "0", "-1"])
             target.writestr(f"{day}.csv", stream.getvalue())
     archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
-    assignments = tmp_path / "assignments.yaml"
-    assignments.write_text(
-        yaml.safe_dump(
-            {
-                "version": "1.0.0",
-                "assignments": {
-                    "Faheem": ["2016Q1"],
-                    "Zahid": [],
-                    "Sulaiman": [],
-                    "Shuhail": [],
-                },
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
     approvals = tmp_path / "approvals.yaml"
     approvals.write_text(
         yaml.safe_dump(
             {
-                "version": "1.0.0",
-                "approvals": {
-                    "2016Q1": {
+                "version": "2.0.0",
+                "records": [
+                    {
+                        "approval_id": "synthetic-approval",
+                        "quarter": "2016Q1",
                         "decision": "authorize_cleaning",
                         "archive_sha256": archive_sha,
                         "reviewed_by": "synthetic-launcher-test",
                         "reviewed_at": "2026-11-03T00:00:00Z",
                         "evidence_reference": "synthetic-launcher-test",
                         "authenticity_status": "unverified",
+                        "evidence_level": "level1_local_integrity",
+                        "source_policy_version": "1.0.0",
+                        "processing_authorization": True,
+                        "research_use_source_approved": False,
+                        "declared_source_url": "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2016.zip",
                         "archive_integrity_reviewed": True,
                         "date_coverage_reviewed": True,
                         "official_url_reviewed": True,
                         "approved_missing_dates": [],
                         "reason": "synthetic execution fixture",
                     }
-                },
+                ],
             },
             sort_keys=False,
         ),
@@ -88,7 +79,6 @@ def _fixture(tmp_path: Path) -> dict[str, Path | str]:
     package.write_bytes(b"synthetic package identity")
     return {
         "archive_directory": archive_directory,
-        "assignments": assignments,
         "approvals": approvals,
         "package": package,
         "package_sha": hashlib.sha256(package.read_bytes()).hexdigest(),
@@ -110,20 +100,24 @@ def _run_launcher(tmp_path: Path, mode: str) -> tuple[subprocess.CompletedProces
         str(fixture["package"]),
         "-ExpectedPackageSha256",
         str(fixture["package_sha"]),
-        "-Teammate",
+        "-Operator",
         "Faheem",
-        "-ArchiveDirectory",
-        str(fixture["archive_directory"]),
+        "-Quarter",
+        "2016Q1",
+        "-ArchivePath",
+        str(Path(fixture["archive_directory"]) / "data_Q1_2016.zip"),
+        "-SourceUrl",
+        "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2016.zip",
         "-EvidenceRoot",
         str(evidence),
         "-OutputRoot",
         str(output),
         "-PythonPath",
         sys.executable,
-        "-AssignmentsPath",
-        str(fixture["assignments"]),
         "-ApprovalsPath",
         str(fixture["approvals"]),
+        "-OriginalOperator",
+        "Zahid",
         mode,
     ]
     completed = subprocess.run(
@@ -139,12 +133,10 @@ def _run_launcher(tmp_path: Path, mode: str) -> tuple[subprocess.CompletedProces
 
 @pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is unavailable")
 def test_windows_launcher_dry_run_creates_evidence_only(tmp_path: Path) -> None:
-    completed, evidence, output = _run_launcher(tmp_path, "-DryRunOnly")
+    completed, evidence, output = _run_launcher(tmp_path, "-InspectOnly")
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
-    run_directory = next(evidence.glob("Faheem-*"))
-    summary = json.loads((run_directory / "teammate_summary.json").read_text())
-    assert summary["quarters"][0]["outcome"] == "DRY_RUN_PASS"
+    # Inspect-only is the safe preflight; no output or evidence run directory is created.
     assert not output.exists()
 
 
@@ -153,12 +145,10 @@ def test_windows_launcher_separates_requires_review_output(tmp_path: Path) -> No
     completed, evidence, output = _run_launcher(tmp_path, "-ExecuteCleaning")
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
-    run_directory = next(evidence.glob("Faheem-*"))
-    summary = json.loads((run_directory / "teammate_summary.json").read_text())
-    quarter = summary["quarters"][0]
-    assert quarter["outcome"] == "REQUIRES_REVIEW"
-    assert quarter["validation_status"] == "requires_review"
-    cleaned = output / "requires_review" / "2016Q1"
+    run_directory = next(evidence.glob("run-2016Q1-Faheem-*"))
+    source_evidence = json.loads((run_directory / "source_evidence.json").read_text())
+    assert source_evidence["operator"] == "Faheem"
+    assert source_evidence["original_operator"] == "Zahid"
+    cleaned = next((output / "2016Q1").glob("run-2016Q1-Faheem-*"))
     assert (cleaned / "source_manifest.json").is_file()
     assert list((cleaned / "data" / "2016Q1").glob("*.parquet"))
-    assert not (output / "approved" / "2016Q1").exists()

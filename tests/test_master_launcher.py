@@ -72,6 +72,9 @@ def test_windows_launcher_help_succeeds(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
     assert "DrivePriority AI master workflow" in completed.stdout
+    assert "inspect" in completed.stdout
+    assert "authorize" in completed.stdout
+    assert "resource-check" in completed.stdout
 
     for argument in ("help", "--help"):
         completed = subprocess.run(

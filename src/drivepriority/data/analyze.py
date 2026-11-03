@@ -221,6 +221,9 @@ def analyze_quarter(
             "generated_at": utc_now(),
             "source_output": str(quarter_output),
             "source_manifest_sha256": sha256_file(quarter_output / "source_manifest.json"),
+            "input_pipeline_version": manifest.get("software", {}).get(
+                "pipeline_version"
+            ),
             "original_validation_status": validation.get("status"),
             "cleaning": {
                 "input_rows": quality.get("counts", {}).get("input_rows"),

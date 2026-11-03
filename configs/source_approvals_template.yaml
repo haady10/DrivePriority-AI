@@ -1,23 +1,12 @@
-version: "1.0.0"
+version: "2.0.0"
 
-# Copy this file outside the frozen package and add only reviewed assigned
-# quarters. A local hash alone is not publisher authentication. Use
-# authenticity_status: unverified to authorize cleaning while retaining
-# requires_review. The two approved authenticity values require documented
-# evidence and all three review booleans.
-approvals: {}
+# Do not edit approval records manually. The project leader appends records with
+# RUN_ME.cmd authorize ... --confirm. Each record is bound to one quarter and
+# one archive SHA-256. Operator recognition, processing authorization, and
+# research-use source approval are separate controls.
+records: []
 
-# Example structure only; do not uncomment without completing the review:
-# approvals:
-#   2016Q1:
-#     decision: authorize_cleaning  # or do_not_process
-#     archive_sha256: "64 lowercase or uppercase hexadecimal characters"
-#     reviewed_by: "named responsible reviewer"
-#     reviewed_at: "YYYY-MM-DDTHH:MM:SSZ"
-#     evidence_reference: "ticket, signed record, or publisher checksum URL"
-#     authenticity_status: unverified
-#     archive_integrity_reviewed: true
-#     date_coverage_reviewed: true
-#     official_url_reviewed: true
-#     approved_missing_dates: []
-#     reason: "documented review decision"
+# Evidence levels:
+# level1_local_integrity: readable ZIP, CRC, member/date inventory and local hash.
+# level2_official_download_supported: documented official Backblaze origin reviewed.
+# level3_publisher_bytes_verified: publisher-issued checksum independently matched.

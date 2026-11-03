@@ -416,7 +416,7 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     assert manifest["source"]["url"] == SOURCE_URL
     assert manifest["source"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
     assert manifest["manifest_version"] == "1.6.0"
-    assert manifest["software"]["pipeline_version"] == "0.2.0"
+    assert manifest["software"]["pipeline_version"] == "0.3.0"
     assert manifest["identity"]["pipeline"] == manifest["software"]["recovery_identity"]
     assert manifest["identity"]["pipeline"] == pipeline_recovery_identity(
         Path(__file__).resolve().parents[1]

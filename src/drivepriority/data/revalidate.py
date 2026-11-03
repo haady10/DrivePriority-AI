@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import pyarrow.parquet as pq
+import yaml
 
 from drivepriority.data.analyze import AnalysisError, _verified_input
 from drivepriority.data.manifest import (
@@ -20,7 +21,9 @@ from drivepriority.data.manifest import (
 )
 
 
-REVALIDATION_VERSION = "1.0.0"
+REVALIDATION_VERSION = "1.1.0"
+LEGACY_ADAPTER_VERSION = "1.0.0"
+SUPPORTED_PIPELINE_VERSIONS = {"0.1.4", "0.1.5", "0.2.0", "0.3.0"}
 
 
 class RevalidationError(RuntimeError):
@@ -50,6 +53,7 @@ def revalidate_quarter(
     *,
     resolution_evidence: Path | None = None,
     authorization_evidence: Path | None = None,
+    source_approval_evidence: Path | None = None,
 ) -> dict[str, Any]:
     quarter_output = quarter_output.resolve()
     analysis_output = analysis_output.resolve()
@@ -59,6 +63,13 @@ def revalidate_quarter(
     ).exists():
         raise RevalidationError("Revalidation output already exists; reports are immutable")
     manifest = _verified_input(quarter_output)
+    input_pipeline_version = str(
+        manifest.get("software", {}).get("pipeline_version", "unknown")
+    )
+    if input_pipeline_version not in SUPPORTED_PIPELINE_VERSIONS:
+        raise RevalidationError(
+            f"Unsupported cleaned-output pipeline version: {input_pipeline_version}"
+        )
     source_manifest_sha = sha256_file(quarter_output / "source_manifest.json")
     analysis = _verify_analysis(analysis_output, source_manifest_sha)
     quarter = str(manifest.get("assigned_quarter"))
@@ -79,6 +90,31 @@ def revalidate_quarter(
             raise RevalidationError("Authorization evidence quarter mismatch")
         if authorization.get("archive_sha256") != manifest.get("source", {}).get("sha256"):
             raise RevalidationError("Authorization evidence archive identity mismatch")
+    source_approval: dict[str, Any] = {}
+    if source_approval_evidence is not None:
+        payload = yaml.safe_load(source_approval_evidence.resolve().read_text(encoding="utf-8"))
+        records = payload.get("records") if isinstance(payload, dict) else None
+        if not isinstance(records, list):
+            raise RevalidationError("Source approval evidence must use version 2 records")
+        archive_sha = manifest.get("source", {}).get("sha256")
+        candidates = [
+            record
+            for record in records
+            if isinstance(record, dict)
+            and record.get("quarter") == quarter
+            and str(record.get("archive_sha256", "")).lower()
+            == str(archive_sha).lower()
+        ]
+        if not candidates:
+            raise RevalidationError("No source approval matches this quarter/archive")
+        source_approval = candidates[-1]
+        if source_approval.get("research_use_source_approved") is not True:
+            raise RevalidationError("Source approval has not approved research use")
+        if source_approval.get("evidence_level") not in {
+            "level2_official_download_supported",
+            "level3_publisher_bytes_verified",
+        }:
+            raise RevalidationError("Source evidence level is insufficient for research use")
 
     data_files = sorted((quarter_output / "data").rglob("*.parquet"))
     row_count = 0
@@ -111,6 +147,8 @@ def revalidate_quarter(
             "unexplained_calendar_coverage_gaps",
         }
     ]
+    if source_approval:
+        source_review = []
     authorization_required = processing.get("production_or_full_ingestion_authorized") is False
     authorization_approved = authorization.get("decision") == "authorized_post_run_review"
     review_reasons: list[str] = []
@@ -155,6 +193,13 @@ def revalidate_quarter(
         "source": {
             "archive_sha256": manifest.get("source", {}).get("sha256"),
             "review_reasons": source_review,
+            "approval_evidence": source_approval or None,
+        },
+        "legacy_compatibility": {
+            "input_pipeline_version": input_pipeline_version,
+            "adapter_version": LEGACY_ADAPTER_VERSION,
+            "historical_files_modified": False,
+            "compatible": True,
         },
         "authorization": {
             "historically_required": authorization_required,
@@ -192,6 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--revalidation-output", type=Path, required=True)
     parser.add_argument("--resolution-evidence", type=Path)
     parser.add_argument("--authorization-evidence", type=Path)
+    parser.add_argument("--source-approval-evidence", type=Path)
     return parser
 
 
@@ -204,6 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.revalidation_output,
             resolution_evidence=arguments.resolution_evidence,
             authorization_evidence=arguments.authorization_evidence,
+            source_approval_evidence=arguments.source_approval_evidence,
         )
     except (AnalysisError, RevalidationError, OSError, ValueError) as exc:
         print(f"ERROR: {exc}")

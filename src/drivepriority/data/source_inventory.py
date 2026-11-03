@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 from copy import deepcopy
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path, PurePosixPath
 import re
+import shutil
+import time
+import tracemalloc
 from typing import Any, Mapping, Sequence
+import uuid
 import zipfile
 
 import yaml
@@ -23,17 +28,54 @@ from drivepriority.data.ingest import (
 from drivepriority.data.manifest import sha256_file, write_json_atomic
 
 
-INVENTORY_TOOL_VERSION = "1.0.0"
+INVENTORY_TOOL_VERSION = "1.1.0"
 OFFICIAL_LISTING_URL = (
     "https://www.backblaze.com/cloud-storage/resources/hard-drive-test-data"
 )
 OFFICIAL_ARCHIVE_ROOT = (
     "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data"
 )
-APPROVAL_VERSION = "1.0.0"
+APPROVAL_VERSION = "2.0.0"
+LEGACY_APPROVAL_VERSION = "1.0.0"
 ASSIGNMENT_VERSION = "1.0.0"
+SOURCE_POLICY_VERSION = "1.0.0"
+OPERATORS = (
+    "Haady Abdul Jabar",
+    "Faheem",
+    "Zahid",
+    "Sulaiman",
+    "Shuhail",
+)
+LEADER = "Haady Abdul Jabar"
 DATE_MEMBER = re.compile(r"(?P<day>20\d{2}-\d{2}-\d{2})\.csv\Z", re.IGNORECASE)
 SHA256 = re.compile(r"[0-9a-fA-F]{64}\Z")
+
+
+def _windows_memory() -> dict[str, int | None]:
+    if not hasattr(ctypes, "windll"):
+        return {"total_physical_bytes": None, "available_physical_bytes": None}
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [
+            ("length", ctypes.c_ulong),
+            ("memory_load", ctypes.c_ulong),
+            ("total_physical", ctypes.c_ulonglong),
+            ("available_physical", ctypes.c_ulonglong),
+            ("total_page_file", ctypes.c_ulonglong),
+            ("available_page_file", ctypes.c_ulonglong),
+            ("total_virtual", ctypes.c_ulonglong),
+            ("available_virtual", ctypes.c_ulonglong),
+            ("available_extended_virtual", ctypes.c_ulonglong),
+        ]
+
+    status = MemoryStatus()
+    status.length = ctypes.sizeof(MemoryStatus)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return {"total_physical_bytes": None, "available_physical_bytes": None}
+    return {
+        "total_physical_bytes": int(status.total_physical),
+        "available_physical_bytes": int(status.available_physical),
+    }
 
 
 def supported_quarters() -> tuple[str, ...]:
@@ -78,37 +120,43 @@ def _write_yaml_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
-def load_assignments(path: Path, teammate: str) -> list[str]:
+def validate_operator(operator: str) -> str:
+    if operator not in OPERATORS:
+        raise PipelineError(
+            f"Unknown operator {operator!r}; choose one of: {', '.join(OPERATORS)}"
+        )
+    return operator
+
+
+def load_assignments(path: Path, operator: str) -> list[str]:
+    """Return workload-planning assignments without restricting access.
+
+    Any recognized operator may process any supported quarter.  This file is
+    retained only to show the original workload plan and must never be used as
+    an authorization boundary.
+    """
+    validate_operator(operator)
     payload = _read_yaml(path)
     if payload.get("version") != ASSIGNMENT_VERSION:
         raise PipelineError("Unsupported teammate assignment version")
     assignments = payload.get("assignments")
-    if not isinstance(assignments, dict) or teammate not in assignments:
-        raise PipelineError(f"No assignment record exists for teammate {teammate!r}")
-    permitted_teammates = {"Faheem", "Zahid", "Sulaiman", "Shuhail"}
-    if set(assignments) != permitted_teammates:
+    if not isinstance(assignments, dict) or operator not in assignments:
+        raise PipelineError(f"No planning record exists for operator {operator!r}")
+    if set(assignments) != set(OPERATORS):
         raise PipelineError(
-            "Assignments must contain exactly Faheem, Zahid, Sulaiman, and Shuhail"
+            "Planning assignments must contain exactly the five approved operators"
         )
-    owners: dict[str, str] = {}
     for owner, assigned in assignments.items():
         if not isinstance(assigned, list):
             raise PipelineError(f"Assignment for {owner} must be a quarter list")
         for quarter in assigned:
             if not isinstance(quarter, str) or quarter not in SUPPORTED_QUARTERS:
                 raise PipelineError(f"Assignment for {owner} contains an invalid quarter")
-            if quarter in owners:
-                raise PipelineError(
-                    f"Quarter {quarter} is assigned to both {owners[quarter]} and {owner}"
-                )
-            owners[quarter] = owner
-    quarters = assignments[teammate]
-    if not isinstance(quarters, list) or not quarters:
-        raise PipelineError(
-            f"No quarters are assigned to {teammate}; research-lead assignment is required"
-        )
+    quarters = assignments[operator]
+    if not isinstance(quarters, list):
+        raise PipelineError(f"Planning assignment for {operator} must be a quarter list")
     if len(quarters) != len(set(quarters)):
-        raise PipelineError(f"Assignment for {teammate} contains duplicate quarters")
+        raise PipelineError(f"Planning assignment for {operator} contains duplicate quarters")
     return sorted(quarters)
 
 
@@ -116,18 +164,148 @@ def load_approvals(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
     payload = _read_yaml(path)
+    if payload.get("version") == LEGACY_APPROVAL_VERSION:
+        approvals = payload.get("approvals")
+        if not isinstance(approvals, dict):
+            raise PipelineError("Source approvals must contain an approvals mapping")
+        return approvals
     if payload.get("version") != APPROVAL_VERSION:
         raise PipelineError("Unsupported source approval version")
-    approvals = payload.get("approvals")
-    if not isinstance(approvals, dict):
-        raise PipelineError("Source approvals must contain an approvals mapping")
+    records = payload.get("records")
+    if not isinstance(records, list):
+        raise PipelineError("Version 2 source approvals must contain a records list")
+    approvals: dict[str, Any] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            raise PipelineError("Malformed source approval record")
+        quarter = record.get("quarter")
+        if not isinstance(quarter, str) or quarter not in SUPPORTED_QUARTERS:
+            raise PipelineError("Source approval record has an invalid quarter")
+        approvals[quarter] = record
     return approvals
+
+
+def authorize_archive(
+    *,
+    quarter: str,
+    archive: Path,
+    base_config_path: Path,
+    approvals_path: Path,
+    approved_by: str,
+    evidence_reference: str,
+    source_url: str,
+    approve_processing: bool,
+    approve_research_use: bool = False,
+    evidence_level: str = "level1_local_integrity",
+    approved_missing_dates: Sequence[str] = (),
+    publisher_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Append one immutable leader decision for an exact quarter/archive hash."""
+    if approved_by != LEADER:
+        raise PipelineError(f"Only {LEADER} may create processing approvals")
+    if not evidence_reference.strip() or not source_url.strip():
+        raise PipelineError("Evidence reference and actual source URL are required")
+    if evidence_level not in {
+        "level1_local_integrity",
+        "level2_official_download_supported",
+        "level3_publisher_bytes_verified",
+    }:
+        raise PipelineError("Unsupported source evidence level")
+    if evidence_level == "level1_local_integrity" and approve_research_use:
+        raise PipelineError("Local integrity alone cannot approve official-source research use")
+    configuration, _ = load_configuration(base_config_path)
+    scan = scan_archive(quarter, archive.resolve(), configuration, source_url=source_url)
+    archive_sha = str(scan["archive"]["sha256"]).lower()
+    if evidence_level == "level3_publisher_bytes_verified":
+        if not isinstance(publisher_sha256, str) or publisher_sha256.lower() != archive_sha:
+            raise PipelineError(
+                "Level 3 requires a publisher-issued SHA-256 matching the archive"
+            )
+    existing: dict[str, Any]
+    if approvals_path.exists():
+        existing = _read_yaml(approvals_path)
+        if existing.get("version") != APPROVAL_VERSION or not isinstance(
+            existing.get("records"), list
+        ):
+            raise PipelineError(
+                "Leader approvals must use the version 2 append-only record format"
+            )
+    else:
+        existing = {"version": APPROVAL_VERSION, "records": []}
+    records = list(existing["records"])
+    for prior in records:
+        if (
+            isinstance(prior, dict)
+            and prior.get("quarter") == quarter
+            and str(prior.get("archive_sha256", "")).lower() == archive_sha
+            and prior.get("decision") == "authorize_cleaning"
+            and approve_processing
+            and prior.get("evidence_level") == evidence_level
+            and prior.get("research_use_source_approved")
+            == bool(approve_research_use)
+        ):
+            raise PipelineError(
+                "This exact quarter/archive is already authorized; existing approval is reusable"
+            )
+    authenticity_status = "unverified"
+    if approve_research_use and evidence_level == "level2_official_download_supported":
+        authenticity_status = "manual_review_approved"
+    elif approve_research_use and evidence_level == "level3_publisher_bytes_verified":
+        authenticity_status = "publisher_checksum_verified"
+    record = {
+        "approval_id": f"approval-{uuid.uuid4().hex}",
+        "record_version": APPROVAL_VERSION,
+        "source_policy_version": SOURCE_POLICY_VERSION,
+        "quarter": quarter,
+        "decision": "authorize_cleaning" if approve_processing else "do_not_process",
+        "archive_sha256": archive_sha,
+        "archive_bytes": scan["archive"]["bytes"],
+        "archive_filename": scan["archive"]["filename"],
+        "reviewed_by": approved_by,
+        "reviewed_at": _utc_now(),
+        "evidence_reference": evidence_reference.strip(),
+        "declared_source_url": source_url.strip(),
+        "evidence_level": evidence_level,
+        "authenticity_status": authenticity_status,
+        "processing_authorization": bool(approve_processing),
+        "research_use_source_approved": bool(approve_research_use),
+        "archive_integrity_reviewed": True,
+        "date_coverage_reviewed": True,
+        "official_url_reviewed": evidence_level != "level1_local_integrity",
+        "approved_missing_dates": sorted(set(approved_missing_dates)),
+        "publisher_sha256": publisher_sha256.lower() if publisher_sha256 else None,
+        "remaining_limitations": (
+            []
+            if evidence_level == "level3_publisher_bytes_verified"
+            else ["Publisher-issued checksum unavailable or not independently verified"]
+        ),
+        "scan_summary": {
+            "zip_crc_verified": scan["archive"]["zip_crc_verified"],
+            "archive_file_count": scan["archive"]["archive_file_count"],
+            "data_csv_member_count": scan["archive"]["data_csv_member_count"],
+            "missing_dates": scan["calendar"]["missing_dates"],
+            "unexpected_dates": scan["calendar"]["unexpected_dates"],
+        },
+    }
+    # Validate the record against the same admission logic before publication.
+    _approval_for_scan(quarter, scan, record)
+    records.append(record)
+    _write_yaml_atomic(
+        approvals_path,
+        {"version": APPROVAL_VERSION, "records": records},
+    )
+    return {"record": record, "scan": scan, "approvals_path": str(approvals_path.resolve())}
 
 
 def scan_archive(
     quarter: str,
     archive: Path,
     configuration: Mapping[str, Any],
+    *,
+    source_url: str | None = None,
+    download_date: str | None = None,
+    capture_method: str = "local_archive_inspection",
+    evidence_reference: str | None = None,
 ) -> dict[str, Any]:
     expected_filename = official_archive_filename(quarter)
     if archive.name != expected_filename:
@@ -174,9 +352,13 @@ def scan_archive(
         "quarter": quarter,
         "official_reference": {
             "listing_url": OFFICIAL_LISTING_URL,
-            "archive_url": official_archive_url(quarter),
+            "archive_url": source_url or official_archive_url(quarter),
             "archive_filename": expected_filename,
-            "reference_status": "quarter_and_download_link_listed_by_backblaze",
+            "reference_status": (
+                "operator_declared_official_download_url"
+                if source_url
+                else "configured_backblaze_download_reference"
+            ),
             "publisher_checksum_available": False,
         },
         "archive": {
@@ -211,7 +393,62 @@ def scan_archive(
         },
         "integrity_status": "verified_local_bytes",
         "authenticity_status": "unverified_publisher_bytes",
+        "source_declaration": {
+            "download_date": download_date,
+            "capture_method": capture_method,
+            "evidence_reference": evidence_reference,
+            "launcher_observed_download": False,
+        },
         "observed_at": _utc_now(),
+    }
+
+
+def resource_check(
+    quarter: str,
+    archive: Path,
+    configuration: Mapping[str, Any],
+    *,
+    source_url: str | None = None,
+) -> dict[str, Any]:
+    """Measure bounded archive inspection without running ingestion."""
+    archive = archive.resolve()
+    disk_before = shutil.disk_usage(archive.parent)
+    tracemalloc.start()
+    started = time.perf_counter()
+    scan = scan_archive(quarter, archive, configuration, source_url=source_url)
+    elapsed = time.perf_counter() - started
+    _current, peak_python = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    disk_after = shutil.disk_usage(archive.parent)
+    memory = _windows_memory()
+    return {
+        "resource_check_version": "1.0.0",
+        "quarter": quarter,
+        "archive_sha256": scan["archive"]["sha256"],
+        "archive_bytes": scan["archive"]["bytes"],
+        "operation": "read_only_hash_crc_member_and_calendar_scan",
+        "elapsed_seconds": round(elapsed, 6),
+        "peak_python_tracemalloc_bytes": peak_python,
+        "disk_free_before_bytes": disk_before.free,
+        "disk_free_after_bytes": disk_after.free,
+        "disk_growth_observed_bytes": max(0, disk_before.free - disk_after.free),
+        "system_memory": memory,
+        "bounded_processing_demonstrated": True,
+        "full_ingestion_executed": False,
+        "duckdb_spill_measured": False,
+        "eight_gb_suitability_proven": False,
+        "limitations": [
+            "tracemalloc excludes native-library allocations",
+            "read-only inspection is not a full-quarter ingestion RAM benchmark",
+            "DuckDB spill is not exercised by archive inspection",
+        ],
+        "scan_summary": {
+            "zip_crc_verified": scan["archive"]["zip_crc_verified"],
+            "archive_file_count": scan["archive"]["archive_file_count"],
+            "data_csv_member_count": scan["archive"]["data_csv_member_count"],
+            "coverage_complete": scan["calendar"]["coverage_complete"],
+        },
+        "measured_at": _utc_now(),
     }
 
 
@@ -263,6 +500,20 @@ def _approval_for_scan(
             raise PipelineError(f"Date coverage review is incomplete for {quarter}")
         if raw.get("official_url_reviewed") is not True:
             raise PipelineError(f"Official URL review is incomplete for {quarter}")
+    evidence_level = raw.get("evidence_level", "legacy_unspecified")
+    if evidence_level not in {
+        "legacy_unspecified",
+        "level1_local_integrity",
+        "level2_official_download_supported",
+        "level3_publisher_bytes_verified",
+    }:
+        raise PipelineError(f"Invalid source evidence level for {quarter}")
+    if (
+        authenticity_status == "publisher_checksum_verified"
+        and evidence_level != "legacy_unspecified"
+        and evidence_level != "level3_publisher_bytes_verified"
+    ):
+        raise PipelineError("Publisher-byte verification requires Level 3 evidence")
     return {
         "processing_authorized": raw["decision"] == "authorize_cleaning",
         "authenticity_status": authenticity_status,
@@ -270,6 +521,11 @@ def _approval_for_scan(
         "reviewed_by": raw["reviewed_by"],
         "reviewed_at": raw["reviewed_at"],
         "evidence_reference": raw["evidence_reference"],
+        "approval_id": raw.get("approval_id"),
+        "source_policy_version": raw.get("source_policy_version"),
+        "evidence_level": evidence_level,
+        "declared_source_url": raw.get("declared_source_url"),
+        "remaining_limitations": raw.get("remaining_limitations", []),
         "reason": raw.get("reason"),
     }
 
@@ -305,6 +561,14 @@ def build_quarter_configuration(
                         "reviewed_at": approval.get("reviewed_at"),
                         "evidence_reference": approval.get("evidence_reference"),
                         "approved_sha256": archive["sha256"],
+                        "evidence_level": approval.get("evidence_level"),
+                        "source_policy_version": approval.get(
+                            "source_policy_version"
+                        ),
+                        "approval_id": approval.get("approval_id"),
+                        "remaining_limitations": approval.get(
+                            "remaining_limitations", []
+                        ),
                     }
                     if authenticity_approved
                     else {"status": "unverified"}
@@ -323,6 +587,7 @@ def build_quarter_configuration(
                     "publisher_checksum_available": official[
                         "publisher_checksum_available"
                     ],
+                    "source_declaration": scan.get("source_declaration"),
                 },
                 "expected_dates": calendar["expected_dates"],
                 "approved_missing_dates": list(approval["approved_missing_dates"]),
@@ -334,20 +599,30 @@ def build_quarter_configuration(
 
 def generate_inventory(
     *,
-    teammate: str,
-    assignments_path: Path,
+    operator: str | None = None,
+    teammate: str | None = None,
+    assignments_path: Path | None = None,
+    requested_quarters: Sequence[str] | None = None,
     archive_directory: Path,
     evidence_directory: Path,
     base_config_path: Path,
     approvals_path: Path | None = None,
 ) -> dict[str, Any]:
-    quarters = load_assignments(assignments_path, teammate)
+    actual_operator = validate_operator(operator or teammate or "")
+    planned = (
+        load_assignments(assignments_path, actual_operator)
+        if assignments_path is not None
+        else []
+    )
+    quarters = list(requested_quarters) if requested_quarters is not None else planned
+    if not quarters:
+        raise PipelineError("Select at least one quarter to inspect or process")
+    if any(quarter not in SUPPORTED_QUARTERS for quarter in quarters):
+        raise PipelineError("Requested quarter is outside 2016Q1 through 2026Q2")
+    if len(quarters) != len(set(quarters)):
+        raise PipelineError("Requested quarter list contains duplicates")
+    quarters = sorted(quarters)
     approvals = load_approvals(approvals_path)
-    unknown_approvals = sorted(set(approvals) - set(quarters))
-    if unknown_approvals:
-        raise PipelineError(
-            "Approval file contains unassigned quarters: " + ", ".join(unknown_approvals)
-        )
     if evidence_directory.exists():
         raise PipelineError(f"Evidence directory already exists: {evidence_directory}")
     evidence_directory.mkdir(parents=True)
@@ -368,12 +643,29 @@ def generate_inventory(
                 {
                     "quarter": quarter,
                     "processing_authorized": False,
-                    "reason": "assigned_archive_missing",
+                    "reason": "selected_archive_missing",
                 }
             )
             continue
-        scan = scan_archive(quarter, archive, base_configuration)
-        approval = _approval_for_scan(quarter, scan, approvals.get(quarter))
+        selected_approval = approvals.get(quarter)
+        declared_url = (
+            selected_approval.get("declared_source_url")
+            if isinstance(selected_approval, dict)
+            else None
+        )
+        scan = scan_archive(
+            quarter,
+            archive,
+            base_configuration,
+            source_url=declared_url,
+            capture_method="launcher_local_archive_inspection",
+            evidence_reference=(
+                selected_approval.get("evidence_reference")
+                if isinstance(selected_approval, dict)
+                else None
+            ),
+        )
+        approval = _approval_for_scan(quarter, scan, selected_approval)
         configuration = build_quarter_configuration(base_configuration, scan, approval)
         config_path = evidence_directory / "configs" / f"{quarter}.yaml"
         _write_yaml_atomic(config_path, configuration)
@@ -404,18 +696,29 @@ def generate_inventory(
                 ),
                 "unapproved_missing_dates": remaining_gaps,
                 "reason": approval.get("reason"),
+                "operator": actual_operator,
+                "original_planned_operators": [],
             }
         )
+        if assignments_path is not None:
+            assignments_payload = _read_yaml(assignments_path).get("assignments", {})
+            plan[-1]["original_planned_operators"] = sorted(
+                name
+                for name, values in assignments_payload.items()
+                if isinstance(values, list) and quarter in values
+            )
     report = {
         "tool_version": INVENTORY_TOOL_VERSION,
-        "teammate": teammate,
-        "assigned_quarters": quarters,
+        "operator": actual_operator,
+        "operator_selection_is_traceability_not_authentication": True,
+        "planned_quarters": planned,
+        "selected_quarters": quarters,
         "generated_at": _utc_now(),
         "records": records,
     }
     execution = {
         "tool_version": INVENTORY_TOOL_VERSION,
-        "teammate": teammate,
+        "operator": actual_operator,
         "generated_at": report["generated_at"],
         "quarters": plan,
     }
@@ -426,8 +729,9 @@ def generate_inventory(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--teammate", required=True)
-    parser.add_argument("--assignments", type=Path, required=True)
+    parser.add_argument("--operator", required=True, choices=OPERATORS)
+    parser.add_argument("--quarter", action="append", required=True)
+    parser.add_argument("--assignments", type=Path)
     parser.add_argument("--archive-dir", type=Path, required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--base-config", type=Path, required=True)
@@ -439,8 +743,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
         result = generate_inventory(
-            teammate=arguments.teammate,
+            operator=arguments.operator,
             assignments_path=arguments.assignments,
+            requested_quarters=arguments.quarter,
             archive_directory=arguments.archive_dir,
             evidence_directory=arguments.evidence_dir,
             base_config_path=arguments.base_config,

@@ -147,3 +147,91 @@ def test_resolution_evidence_is_bound_to_source_manifest(tmp_path: Path) -> None
             tmp_path / "revalidation",
             resolution_evidence=evidence,
         )
+
+
+def test_v014_output_is_analyzed_and_revalidated_without_rewriting_history(
+    tmp_path: Path,
+) -> None:
+    cleaned = _fixture(
+        tmp_path,
+        [["2016-01-01", "SN-LEGACY", "Model", "Vendor", "1000", "0"]],
+    )
+    manifest_path = cleaned / "source_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["software"]["pipeline_version"] = "0.1.4"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    data_before = {
+        path.relative_to(cleaned).as_posix(): path.read_bytes()
+        for path in cleaned.rglob("*.parquet")
+    }
+
+    analysis = tmp_path / "legacy-analysis"
+    analysis_report = analyze_quarter(cleaned, analysis)
+    report = revalidate_quarter(cleaned, analysis, tmp_path / "legacy-revalidation")
+
+    assert analysis_report["input_pipeline_version"] == "0.1.4"
+    assert report["legacy_compatibility"] == {
+        "input_pipeline_version": "0.1.4",
+        "adapter_version": "1.0.0",
+        "historical_files_modified": False,
+        "compatible": True,
+    }
+    assert {
+        path.relative_to(cleaned).as_posix(): path.read_bytes()
+        for path in cleaned.rglob("*.parquet")
+    } == data_before
+
+
+def test_unsupported_legacy_contract_is_rejected(tmp_path: Path) -> None:
+    cleaned = _fixture(
+        tmp_path,
+        [["2016-01-01", "SN-OLD", "Model", "Vendor", "1000", "0"]],
+    )
+    manifest_path = cleaned / "source_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["software"]["pipeline_version"] = "0.0.1"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    analysis = tmp_path / "analysis"
+    analyze_quarter(cleaned, analysis)
+
+    with pytest.raises(RevalidationError, match="Unsupported cleaned-output"):
+        revalidate_quarter(cleaned, analysis, tmp_path / "revalidation")
+
+
+def test_bound_level2_source_approval_resolves_only_source_review(tmp_path: Path) -> None:
+    cleaned = _fixture(
+        tmp_path,
+        [["2016-01-01", "SN-SOURCE", "Model", "Vendor", "1000", "0"]],
+    )
+    manifest = json.loads((cleaned / "source_manifest.json").read_text(encoding="utf-8"))
+    approvals = tmp_path / "source-approvals.yaml"
+    approvals.write_text(
+        yaml.safe_dump(
+            {
+                "version": "2.0.0",
+                "records": [
+                    {
+                        "quarter": "2016Q1",
+                        "archive_sha256": manifest["source"]["sha256"],
+                        "research_use_source_approved": True,
+                        "evidence_level": "level2_official_download_supported",
+                        "reviewed_by": "Haady Abdul Jabar",
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    analysis = tmp_path / "analysis"
+    analyze_quarter(cleaned, analysis)
+    report = revalidate_quarter(
+        cleaned,
+        analysis,
+        tmp_path / "revalidation",
+        source_approval_evidence=approvals,
+    )
+    assert report["source"]["review_reasons"] == []
+    assert report["source"]["approval_evidence"]["evidence_level"] == (
+        "level2_official_download_supported"
+    )

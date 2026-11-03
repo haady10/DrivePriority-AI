@@ -1,8 +1,9 @@
 version: "1.0.0"
 
-# The research lead must populate these lists with quarters from 2016Q1 through
-# 2026Q2. Empty assignments fail closed; the launcher never guesses ownership.
+# Workload planning only. These lists never restrict which recognized operator
+# may process a quarter. Historical assignments remain traceable during handover.
 assignments:
+  Haady Abdul Jabar: []
   Faheem: []
   Zahid: []
   Sulaiman: []

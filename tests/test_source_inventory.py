@@ -66,6 +66,7 @@ def _assignments(path: Path) -> Path:
             {
                 "version": "1.0.0",
                 "assignments": {
+                    "Haady Abdul Jabar": [],
                     "Faheem": ["2016Q1"],
                     "Zahid": [],
                     "Sulaiman": [],
@@ -128,13 +129,14 @@ def test_central_inventory_represents_all_supported_quarters_as_pending() -> Non
         assert entry["approver_identity"] is None
 
 
-def test_duplicate_cross_teammate_assignment_is_rejected(tmp_path: Path) -> None:
+def test_planning_assignment_never_restricts_operator_access(tmp_path: Path) -> None:
     assignments = tmp_path / "assignments.yaml"
     assignments.write_text(
         yaml.safe_dump(
             {
                 "version": "1.0.0",
                 "assignments": {
+                    "Haady Abdul Jabar": [],
                     "Faheem": ["2016Q1"],
                     "Zahid": ["2016Q1"],
                     "Sulaiman": [],
@@ -145,14 +147,19 @@ def test_duplicate_cross_teammate_assignment_is_rejected(tmp_path: Path) -> None
         ),
         encoding="utf-8",
     )
-    with pytest.raises(PipelineError, match="assigned to both"):
-        generate_inventory(
-            teammate="Faheem",
-            assignments_path=assignments,
-            archive_directory=tmp_path,
-            evidence_directory=tmp_path / "evidence",
-            base_config_path=BASE_CONFIG,
-        )
+    archive_directory = tmp_path / "archives"
+    archive_directory.mkdir()
+    _archive(archive_directory)
+    plan = generate_inventory(
+        operator="Haady Abdul Jabar",
+        assignments_path=assignments,
+        requested_quarters=["2016Q1"],
+        archive_directory=archive_directory,
+        evidence_directory=tmp_path / "evidence",
+        base_config_path=BASE_CONFIG,
+    )
+    assert plan["quarters"][0]["operator"] == "Haady Abdul Jabar"
+    assert plan["quarters"][0]["original_planned_operators"] == ["Faheem", "Zahid"]
 
 
 def test_scan_records_integrity_and_complete_calendar(tmp_path: Path) -> None:
