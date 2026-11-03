@@ -1,4 +1,7 @@
-# DrivePriority AI central integration 1.0.0
+# DrivePriority AI central integration 1.0.1
+
+Version 1.0.1 fixes Windows command dispatch; the admission and integration
+contracts are unchanged and accept DrivePriority cleaning revalidation 1.1.0.
 
 Use only immutable quarter outputs that pass the admission gate. Git checkouts may be pinned by commit; Git-free cleaning releases must be pinned by both the published release ZIP SHA-256 and the runtime-source SHA-256 recorded in the source manifest. A bound revalidation report may resolve quality-review findings, but it cannot override source-authenticity, structural-integrity, or authorization failures.
 
