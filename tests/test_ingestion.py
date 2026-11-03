@@ -421,16 +421,17 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     assert manifest["identity"]["pipeline"] == pipeline_recovery_identity(
         Path(__file__).resolve().parents[1]
     )
-    if manifest["identity"]["pipeline"]["git_metadata_available"]:
-        assert manifest["identity"]["pipeline"]["git_commit"]
-        assert isinstance(
-            manifest["identity"]["pipeline"]["pipeline_scoped_dirty"], bool
-        )
+    pipeline = manifest["identity"]["pipeline"]
+    if pipeline["git_metadata_available"]:
+        assert pipeline["git_commit"]
+        assert isinstance(pipeline["pipeline_scoped_dirty"], bool)
     else:
-        assert manifest["identity"]["pipeline"]["git_commit"] is None
-        assert manifest["identity"]["pipeline"]["pipeline_scoped_dirty"] is None
-    assert len(manifest["identity"]["pipeline"]["runtime_source_sha256"]) == 64
-    assert len(manifest["identity"]["pipeline"]["requirements_sha256"]) == 64
+        # Code-only ZIP distributions carry no .git directory. The pipeline must
+        # record the revision as unknown instead of inventing or claiming one.
+        assert pipeline["git_commit"] is None
+        assert pipeline["pipeline_scoped_dirty"] is None
+    assert len(pipeline["runtime_source_sha256"]) == 64
+    assert len(pipeline["requirements_sha256"]) == 64
     assert manifest["configuration"]["sha256"]
     assert all(entry["sha256"] for entry in manifest["outputs"])
     assert manifest["central_integration_required"] is True
@@ -3806,3 +3807,342 @@ def test_final_source_integrity_gate_allows_unchanged_archive(
     assert result["status"] == "complete"
     assert phases[-1] == "final publication"
     assert output.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the Q1 pipeline review (2018 Q1 CR-only header failure,
+# missing-value contract, and corrupt compressed streams).
+# ---------------------------------------------------------------------------
+
+LINE_ENDING_ROWS = [
+    [*BASE_HEADER, "smart_5_raw", "smart_9_raw"],
+    ["2016-01-01", "SN-1", "Model A", "Vendor A", "1000", "0", "-7", ""],
+    ["2016-01-02", "SN-2", "Model B", "Vendor B", "2000", "1", "0", "123456789012345678901234567890"],
+    ["2016-01-03", "SN-3", "Model A", "", "1000", "0", "5", "1"],
+]
+
+
+def delimited_member(rows: list[list[str]], terminator: str, *, bom: bool = False) -> bytes:
+    stream = io.StringIO(newline="")
+    csv.writer(stream, lineterminator=terminator).writerows(rows)
+    return (("﻿" if bom else "") + stream.getvalue()).encode("utf-8")
+
+
+def drive_rows(output: Path) -> list[dict[str, object]]:
+    rows = read_drive_data(output).drop_columns(["source_file"]).to_pylist()
+    return sorted(rows, key=lambda row: (row["date"], row["serial_number"]))
+
+
+@pytest.mark.parametrize(
+    ("terminator", "bom"),
+    [("\n", False), ("\r\n", False), ("\r", False), ("\r", True)],
+    ids=["lf", "crlf", "cr-only", "cr-only-with-bom"],
+)
+def test_header_inspection_and_processing_support_every_line_terminator(
+    tmp_path: Path, terminator: str, bom: bool
+) -> None:
+    archive = write_raw_archive(
+        tmp_path / "2016Q1.zip",
+        {"2016-01-01.csv": delimited_member(LINE_ENDING_ROWS, terminator, bom=bom)},
+    )
+    config = write_test_config(tmp_path)
+
+    dry = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=tmp_path / "out",
+        source_url=SOURCE_URL,
+        dry_run=True,
+    )
+    assert dry["status"] == "dry_run"
+    assert dry["member_count"] == 1
+
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=tmp_path / "out",
+        source_url=SOURCE_URL,
+    )
+    assert result["input_rows"] == 3
+    assert result["output_rows"] == 3
+    assert result["quarantined_rows"] == 0
+    schema = read_json(tmp_path / "out" / "schema_report.json")
+    assert schema["members"][0]["original_headers"] == LINE_ENDING_ROWS[0]
+    table = read_drive_data(tmp_path / "out")
+    assert table.column("smart_5_raw").to_pylist() == [Decimal(-7), Decimal(0), Decimal(5)]
+    assert table.column("smart_9_raw").to_pylist() == [
+        None,
+        Decimal("123456789012345678901234567890"),
+        Decimal(1),
+    ]
+    assert table.column("failure").to_pylist() == [0, 1, 0]
+
+
+def test_cr_only_member_matches_lf_member_content_exactly(tmp_path: Path) -> None:
+    outputs = {}
+    for name, terminator in (("lf", "\n"), ("cr", "\r")):
+        root = tmp_path / name
+        root.mkdir()
+        archive = write_raw_archive(
+            root / "2016Q1.zip",
+            {"2016-01-01.csv": delimited_member(LINE_ENDING_ROWS, terminator)},
+        )
+        run(root, archive)
+        outputs[name] = root / "output"
+
+    assert drive_rows(outputs["lf"]) == drive_rows(outputs["cr"])
+    lf_quality = read_json(outputs["lf"] / "quality_report.json")
+    cr_quality = read_json(outputs["cr"] / "quality_report.json")
+    assert lf_quality["counts"] == cr_quality["counts"]
+    assert lf_quality["smart_source_states"] == cr_quality["smart_source_states"]
+
+
+def test_archive_with_one_cr_only_day_among_lf_days_is_fully_processed(
+    tmp_path: Path,
+) -> None:
+    # Reproduces the observed 2018 Q1 layout: most daily members use LF and one
+    # member uses CR-only terminators. Previously archive inspection stopped with
+    # "new-line character seen in unquoted field".
+    header = [*BASE_HEADER, "smart_5_raw"]
+    members = {}
+    for day, terminator in (("2016-01-01", "\n"), ("2016-01-02", "\r"), ("2016-01-03", "\n")):
+        members[f"{day}.csv"] = delimited_member(
+            [header, [day, "SN-1", "Model", "Vendor", "1000", "0", "1"],
+             [day, "SN-2", "Model", "Vendor", "1000", "0", "2"]],
+            terminator,
+        )
+    archive = write_raw_archive(tmp_path / "2016Q1.zip", members)
+
+    result = run(tmp_path, archive)
+
+    assert result["input_rows"] == 6
+    assert result["output_rows"] == 6
+    quality = read_json(tmp_path / "output" / "quality_report.json")
+    assert quality["calendar_coverage"]["observed_dates"] == [
+        "2016-01-01",
+        "2016-01-02",
+        "2016-01-03",
+    ]
+    assert quality["calendar_coverage"]["daily_source_rows"]["2016-01-02"] == 2
+
+
+def test_cr_only_header_read_is_bounded_to_the_header_record() -> None:
+    header = ",".join([*BASE_HEADER, "smart_5_raw"])
+    body = "".join(f"\r2016-01-01,SN-{index},Model,Vendor,1000,0,{index}" for index in range(50000))
+    payload = (header + body + "\r").encode("utf-8")
+    stream = io.BytesIO(payload)
+
+    record = ingest_module._read_header_record_bytes(stream)
+
+    assert record == (header + "\r").encode("utf-8")
+    # Only bounded chunks are read, never the whole CR-only member.
+    assert stream.tell() <= ingest_module.HEADER_SCAN_CHUNK_BYTES
+
+
+def test_header_reader_keeps_quoted_terminators_and_rejects_unbounded_headers() -> None:
+    quoted = b'date,"serial\rnumber",model\r2016-01-01,SN,M\r'
+    assert ingest_module._read_header_record_bytes(io.BytesIO(quoted)) == (
+        b'date,"serial\rnumber",model\r'
+    )
+    assert ingest_module._read_header_record_bytes(io.BytesIO(b"date,serial")) == b"date,serial"
+    assert ingest_module._read_header_record_bytes(io.BytesIO(b"")) == b""
+    oversized = b"a" * (ingest_module.MAXIMUM_HEADER_BYTES + ingest_module.HEADER_SCAN_CHUNK_BYTES)
+    with pytest.raises(csv.Error, match="header record exceeds"):
+        ingest_module._read_header_record_bytes(io.BytesIO(oversized))
+
+
+@pytest.mark.parametrize("terminator", [b"\n", b"\r\n", b"\r"], ids=["lf", "crlf", "cr"])
+def test_header_limit_is_enforced_even_when_terminator_follows_in_same_chunk(
+    terminator: bytes,
+) -> None:
+    # Regression: the limit was checked only after scanning a whole read chunk,
+    # so a header slightly over the limit was returned when its terminator was
+    # found in that chunk.
+    limit = ingest_module.MAXIMUM_HEADER_BYTES
+    trailing = b"2016-01-01,SN,M" + terminator
+
+    at_limit = b"a" * (limit - 1) + terminator[:1]
+    assert ingest_module._read_header_record_bytes(
+        io.BytesIO(at_limit + terminator[1:] + trailing)
+    ) == at_limit
+
+    for overflow in (1, 1000, ingest_module.HEADER_SCAN_CHUNK_BYTES - 2):
+        oversized = b"a" * (limit - 1 + overflow) + terminator + trailing
+        with pytest.raises(csv.Error, match="header record exceeds"):
+            ingest_module._read_header_record_bytes(io.BytesIO(oversized))
+
+    unterminated_at_limit = b"a" * limit
+    assert (
+        ingest_module._read_header_record_bytes(io.BytesIO(unterminated_at_limit))
+        == unterminated_at_limit
+    )
+    with pytest.raises(csv.Error, match="header record exceeds"):
+        ingest_module._read_header_record_bytes(io.BytesIO(b"a" * (limit + 1)))
+
+
+def test_cr_only_member_interruption_resumes_with_verified_checkpoints(
+    tmp_path: Path,
+) -> None:
+    header = [*BASE_HEADER, "smart_5_raw"]
+    archive = write_raw_archive(
+        tmp_path / "2016Q1.zip",
+        {
+            "2016-01-01.csv": delimited_member(
+                [header, *[["2016-01-01", f"SN-{index}", "Model", "Vendor", "1000", "0", str(index)]
+                           for index in range(4)]],
+                "\n",
+            ),
+            "2016-01-02.csv": delimited_member(
+                [header, *[["2016-01-02", f"SN-{index}", "Model", "Vendor", "1000", "0", str(index)]
+                           for index in range(4)]],
+                "\r",
+            ),
+        },
+    )
+    config = write_test_config(tmp_path, batch_rows=1)
+    output = tmp_path / "resumable"
+
+    with pytest.raises(IngestionInterrupted):
+        run_ingestion(
+            config_path=config,
+            quarter="2016Q1",
+            archive=archive,
+            output=output,
+            source_url=SOURCE_URL,
+            _interrupt_after_rows=6,
+        )
+    assert not output.exists()
+
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+        resume=True,
+    )
+
+    assert result["status"] == "complete"
+    assert result["input_rows"] == 8
+    assert read_drive_data(output).num_rows == 8
+
+
+def test_whitespace_only_tokens_are_evidence_not_silent_blanks(tmp_path: Path) -> None:
+    # The immutable missing-value contract is exactly [""]; a whitespace-only
+    # field is a nonempty source token and must not be reported as blank.
+    header = [*BASE_HEADER, "smart_5_raw", "smart_vendor_blob"]
+    archive = write_archive(
+        tmp_path / "2016Q1.zip",
+        {
+            "2016-01-01.csv": [
+                header,
+                ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0", " ", " "],
+                ["2016-01-01", "SN-2", "Model", "Vendor", "  ", "0", "", ""],
+                ["2016-01-01", "SN-3", "Model", "Vendor", "1000", " ", "1", "x"],
+            ]
+        },
+    )
+
+    result = run(tmp_path, archive)
+
+    assert result["input_rows"] == 3
+    assert result["output_rows"] == 2
+    assert result["quarantined_rows"] == 1
+    output = tmp_path / "output"
+    quality = read_json(output / "quality_report.json")
+    assert quality["smart_source_states"]["smart_5_raw"]["invalid_token_rows"] == 1
+    assert quality["smart_source_states"]["smart_5_raw"]["present_blank_rows"] == 1
+    exceptions = pq.read_table(output / "exceptions.parquet").to_pylist()
+    by_code = {}
+    for row in exceptions:
+        by_code.setdefault(row["exception_code"], []).append(row)
+    assert [row["raw_value"] for row in by_code["invalid_smart_value"]] == [" "]
+    assert [row["raw_value"] for row in by_code["invalid_capacity_bytes"]] == ["  "]
+    assert [row["raw_value"] for row in by_code["invalid_failure_flag"]] == [" "]
+    assert "missing_failure_flag" not in by_code
+    table = read_drive_data(output)
+    rows = {row["serial_number"]: row for row in table.to_pylist()}
+    assert rows["SN-1"]["smart_5_raw"] is None
+    assert rows["SN-1"]["smart_vendor_blob"] == " "
+    assert rows["SN-2"]["capacity_bytes"] is None
+    assert rows["SN-2"]["smart_5_raw"] is None
+    assert rows["SN-2"]["smart_vendor_blob"] is None
+
+
+def _corrupt_deflate_archive(path: Path, *, minimum_decoded_bytes: int) -> Path | None:
+    """Write an archive whose deflate stream raises zlib.error (not a CRC error).
+
+    Offsets are searched rather than hard-coded because compressed bytes depend on
+    the zlib build. Returns None when no suitable offset exists for this build.
+    """
+
+    header = ",".join([*BASE_HEADER, "smart_5_raw"])
+    payload = (
+        header
+        + "\n"
+        + "".join(f"2016-01-01,SN-{index},Model,Vendor,1000,0,{index}\n" for index in range(20000))
+    ).encode("utf-8")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as target:
+        target.writestr("day.csv", payload)
+    original = buffer.getvalue()
+    with zipfile.ZipFile(io.BytesIO(original)) as source:
+        info = source.getinfo("day.csv")
+        data_start = info.header_offset + 30 + len(info.filename.encode()) + len(info.extra)
+        compressed_size = info.compress_size
+    for offset in range(64, compressed_size - 128, 97):
+        candidate = bytearray(original)
+        for position in range(data_start + offset, data_start + offset + 64):
+            candidate[position] ^= 0xFF
+        decoded = 0
+        try:
+            with zipfile.ZipFile(io.BytesIO(bytes(candidate))) as source:
+                with source.open("day.csv") as stream:
+                    while chunk := stream.read(4096):
+                        decoded += len(chunk)
+        except zlib.error:
+            if decoded >= minimum_decoded_bytes:
+                path.write_bytes(bytes(candidate))
+                return path
+        except (zipfile.BadZipFile, EOFError):
+            continue
+    return None
+
+
+@pytest.mark.parametrize(
+    "minimum_decoded_bytes",
+    [0, 262144],
+    ids=["corrupt-near-header", "corrupt-after-header-scan"],
+)
+def test_corrupt_compressed_stream_fails_cleanly_before_publication(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], minimum_decoded_bytes: int
+) -> None:
+    # zipfile.testzip() only converts CRC mismatches; a corrupt deflate stream
+    # raised an uncaught zlib.error traceback from the command-line entry point.
+    archive = _corrupt_deflate_archive(
+        tmp_path / "2016Q1.zip", minimum_decoded_bytes=minimum_decoded_bytes
+    )
+    if archive is None:
+        pytest.skip("this zlib build produced no zlib.error corruption offset")
+    output = tmp_path / "corrupt-output"
+
+    exit_code = ingest_module.main(
+        [
+            "--config",
+            str(write_test_config(tmp_path)),
+            "--quarter",
+            "2016Q1",
+            "--archive",
+            str(archive),
+            "--output",
+            str(output),
+            "--source-url",
+            SOURCE_URL,
+        ]
+    )
+
+    assert exit_code == 2
+    assert "ERROR:" in capsys.readouterr().err
+    assert not output.exists()

@@ -488,7 +488,15 @@ class QualityStats:
 
 
 def _is_missing(token: str | None, missing_tokens: set[str]) -> bool:
-    return token is None or token.strip() in missing_tokens
+    """Apply the immutable missing-value contract exactly.
+
+    Only the configured tokens (exactly the empty field) are source-missing. A
+    whitespace-only field is a nonempty source token: it must not be silently
+    reported as blank, so it reaches normal conversion and, where it is not a
+    valid value, produces traceable exception evidence.
+    """
+
+    return token is None or token in missing_tokens
 
 
 def convert_record(

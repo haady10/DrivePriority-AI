@@ -21,6 +21,7 @@ import sys
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 import zipfile
+import zlib
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -87,6 +88,8 @@ RUNTIME_NAMES = {
 REPRODUCIBILITY_METHOD_VERSION = "1.0.0"
 MISSING_VALUE_CONTRACT_VERSION = "1.0.0"
 IMMUTABLE_MISSING_TOKENS = [""]
+HEADER_SCAN_CHUNK_BYTES = 65536
+MAXIMUM_HEADER_BYTES = 1048576
 DUCKDB_MEMORY_LIMIT_PATTERN = re.compile(
     r"^[1-9][0-9]*(?:\.[0-9]+)?(?:B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)$"
 )
@@ -653,6 +656,43 @@ def _archive_member_selection_report(
     }
 
 
+def _read_header_record_bytes(binary: Any) -> bytes:
+    """Return the raw bytes of the first CSV record, including its terminator.
+
+    The record ends at the first LF or CR outside a quoted field, so LF, CRLF,
+    and CR-only members are all supported. ``readline()`` on a binary stream
+    recognizes only LF; on a CR-only member it returned the whole member as one
+    "line", which failed strict CSV parsing and read the full member into memory.
+    UTF-8 multibyte sequences never contain CR or LF bytes, so the byte scan is
+    encoding-safe. Only the header bytes are decoded here; decoding errors in
+    later records remain the responsibility of member processing.
+    """
+
+    buffer = bytearray()
+    scanned = 0
+    in_quotes = False
+    while True:
+        chunk = binary.read(HEADER_SCAN_CHUNK_BYTES)
+        if not chunk:
+            # A final header without a terminator is still subject to the limit.
+            return bytes(buffer)
+        buffer.extend(chunk)
+        while scanned < len(buffer):
+            # The header record, including its terminator, may occupy at most
+            # MAXIMUM_HEADER_BYTES. Enforce the limit before returning, so a
+            # terminator found later in the same read chunk cannot bypass it.
+            if scanned >= MAXIMUM_HEADER_BYTES:
+                raise csv.Error(
+                    f"header record exceeds {MAXIMUM_HEADER_BYTES} bytes"
+                )
+            byte = buffer[scanned]
+            if byte == 0x22:
+                in_quotes = not in_quotes
+            elif not in_quotes and byte in (0x0A, 0x0D):
+                return bytes(buffer[: scanned + 1])
+            scanned += 1
+
+
 def inspect_archive(
     archive: Path, config: Mapping[str, Any]
 ) -> tuple[list[MemberPlan], dict[str, Any]]:
@@ -716,25 +756,19 @@ def inspect_archive(
         for archive_index, info in sorted(csv_infos, key=lambda item: (item[1].filename.casefold(), item[0])):
             try:
                 with source.open(info, "r") as binary:
-                    header_bytes = bytearray()
-                    while byte := binary.read(1):
-                        header_bytes.extend(byte)
-                        if byte == b"\n":
-                            break
-                        if byte == b"\r":
-                            following = binary.read(1)
-                            if following == b"\n":
-                                header_bytes.extend(following)
-                            break
+                    header_bytes = _read_header_record_bytes(binary)
                     if not header_bytes:
                         raise StopIteration
-                    with io.TextIOWrapper(
-                        io.BytesIO(header_bytes), encoding=encoding, newline=""
-                    ) as text:
-                        headers = next(csv.reader(text, strict=True))
+                    header_text = header_bytes.decode(encoding)
+                    # Parse with the same newline-preserving csv semantics that
+                    # member processing uses, so LF, CRLF, and CR-only members
+                    # produce identical headers in inspection and processing.
+                    headers = next(
+                        csv.reader(io.StringIO(header_text, newline=""), strict=True)
+                    )
             except StopIteration as exc:
                 raise PipelineError(f"CSV member is empty: {info.filename}") from exc
-            except (UnicodeError, csv.Error, OSError) as exc:
+            except (UnicodeError, csv.Error, OSError, zlib.error) as exc:
                 raise PipelineError(f"Cannot read header for {info.filename}: {exc}") from exc
             try:
                 analysis = analyze_headers(headers)
@@ -1966,7 +2000,7 @@ def _process_member(
                             )
                             model_key = (
                                 "<MISSING>"
-                                if model_token is None or model_token.strip() in missing_tokens
+                                if model_token is None or model_token in missing_tokens
                                 else model_token
                             )
                             member_extensions = set(member.analysis.unexpected_smart_columns)
@@ -3000,7 +3034,14 @@ def run_ingestion(
         _cleanup_incomplete_files(staging, completed)
         rows_seen = sum(int(member["stats"].get("input_rows", 0)) for member in completed.values())
         with zipfile.ZipFile(archive, "r") as source:
-            bad_member = source.testzip()
+            try:
+                bad_member = source.testzip()
+            except (zlib.error, EOFError) as exc:
+                # testzip() reports CRC mismatches but lets a corrupt compressed
+                # stream escape as zlib.error; treat both as integrity failures.
+                raise PipelineError(
+                    f"ZIP member data cannot be decompressed: {exc}"
+                ) from exc
             if bad_member is not None:
                 raise PipelineError(f"ZIP CRC validation failed for {bad_member}")
 
@@ -3218,7 +3259,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             resume=arguments.resume,
             restart=arguments.restart,
         )
-    except (PipelineError, ValidationError, OSError, zipfile.BadZipFile) as exc:
+    except (PipelineError, ValidationError, OSError, zipfile.BadZipFile, zlib.error) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, indent=2, sort_keys=True))

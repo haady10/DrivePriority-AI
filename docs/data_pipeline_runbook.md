@@ -196,6 +196,14 @@ Recoverable field exceptions, exact duplicates, and candidate identity collision
 
 Every CSV member must contain `date`, `serial_number`, `model`, `capacity_bytes`, and `failure` before row processing begins. Empty archives, empty CSV members, missing required headers, and runs producing zero retained canonical records are structural failures.
 
+### Line terminators and the missing-value contract
+
+CSV members may use LF, CRLF, or CR-only record terminators. Archive inspection reads only the first CSV record's bytes (bounded to 1 MiB) and parses it with the same newline-preserving `csv` semantics used during member processing, so inspection and processing always agree on the header. Pipeline version `0.1.5` fixes a defect in earlier versions where header inspection used binary `readline()`, which recognizes only LF: a CR-only member, such as `2018-02-25.csv` in the 2018 Q1 archive, was read whole as a single line and failed with `new-line character seen in unquoted field`.
+
+The missing-value contract is applied exactly: only an empty field is source-missing. A whitespace-only field is a nonempty source token. For SMART and capacity fields it becomes a canonical null with `invalid_smart_value` or `invalid_capacity_bytes` evidence that retains the exact token; a whitespace-only failure flag is quarantined as `invalid_failure_flag`; text fields and unexpected SMART extensions keep the token unchanged. Earlier versions silently reported whitespace-only fields as blank.
+
+A corrupt compressed member stream is reported as a pipeline integrity error (exit code 2) before staging publication, never as an unhandled traceback. A dry run decompresses only each member's header region, so it does not certify full member integrity; the full run checks every member's CRC before processing.
+
 ## Duplicate and identity audit
 
 Within an assigned quarter, the pipeline reports:
