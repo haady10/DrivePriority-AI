@@ -57,6 +57,7 @@ from drivepriority.data.schema import (
     union_smart_columns,
 )
 from drivepriority.data.validate import (
+    comparison_model_key,
     DuplicateTracker,
     QualityStats,
     ValidationError,
@@ -73,7 +74,7 @@ FINAL_REPORT_NAMES = {
     "validation_results.json",
     "exceptions.parquet",
 }
-MANIFEST_VERSION = "1.5.0"
+MANIFEST_VERSION = "1.6.0"
 ARCHIVE_MEMBER_SELECTION_VERSION = "1.1.0"
 SOURCE_INVENTORY_EVIDENCE_VERSION = "1.2.0"
 APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
@@ -737,6 +738,29 @@ def inspect_archive(
             elif info.filename.lower().endswith(".csv"):
                 csv_infos.append((archive_index, info))
             else:
+                base_name = PurePosixPath(info.filename).name.casefold()
+                suffix = PurePosixPath(info.filename).suffix.casefold()
+                if base_name in {
+                    "readme",
+                    "readme.txt",
+                    "license",
+                    "license.txt",
+                    ".ds_store",
+                }:
+                    classification = "harmless_archive_metadata"
+                elif suffix in {
+                    ".exe",
+                    ".dll",
+                    ".ps1",
+                    ".bat",
+                    ".cmd",
+                    ".vbs",
+                    ".js",
+                    ".scr",
+                }:
+                    classification = "suspicious_archive_content"
+                else:
+                    classification = "unexpected_non_csv_member"
                 non_csv_members.append(
                     {
                         "archive_index": archive_index,
@@ -745,6 +769,7 @@ def inspect_archive(
                         "uncompressed_bytes": info.file_size,
                         "crc32": f"{info.CRC:08x}",
                         "reason_code": "non_csv_archive_member",
+                        "classification": classification,
                     }
                 )
         if not csv_infos:
@@ -1921,6 +1946,9 @@ def _process_member(
                         except StopIteration:
                             attempted_record_number = None
                             break
+                        if not values:
+                            stats.blank_physical_lines_ignored += 1
+                            continue
                         source_record_number = next_record_number
                         next_record_number += 1
                         current_record_number = source_record_number
@@ -2054,8 +2082,14 @@ def _process_member(
                                     member.analysis.original_headers, values
                                 )
                                 identity_tokens = [
-                                    row.get(name)
-                                    for name in ("model", "manufacturer", "capacity_bytes")
+                                    comparison_model_key(row.get("model")),
+                                    row.get("manufacturer"),
+                                    (
+                                        row.get("capacity_bytes")
+                                        if isinstance(row.get("capacity_bytes"), int)
+                                        and row.get("capacity_bytes") > 0
+                                        else None
+                                    ),
                                 ]
                                 identity_json = json.dumps(
                                     identity_tokens,
@@ -2067,6 +2101,9 @@ def _process_member(
                                 row["_source_identity_signature"] = sha256_bytes(
                                     identity_json.encode("utf-8")
                                 )
+                                row["_source_identity_model_key"] = identity_tokens[0]
+                                row["_source_identity_manufacturer_key"] = identity_tokens[1]
+                                row["_source_identity_known_capacity"] = identity_tokens[2]
                                 pending_entries.append((row, source_record_number, reader.line_num))
                                 pending_entry_bytes += _estimated_canonical_entry_bytes(row)
 
@@ -2760,6 +2797,7 @@ def _validation_results(
     completed_count: int,
     calendar_coverage: Mapping[str, Any],
     source_assessment: Mapping[str, Any],
+    archive_member_selection: Mapping[str, Any],
 ) -> dict[str, Any]:
     data_files = sorted((staging / "data").rglob("*.parquet")) if (staging / "data").exists() else []
     readback = _readback_failure_evidence(staging)
@@ -2878,6 +2916,15 @@ def _validation_results(
         review_reasons.append("serial_identity_collisions")
     if stats.issue_severity_counts.get("error", 0):
         review_reasons.append("error_severity_exception_evidence")
+    non_csv_classifications = {
+        str(item.get("classification"))
+        for item in archive_member_selection.get("non_csv_members", [])
+        if isinstance(item, Mapping)
+    }
+    if "unexpected_non_csv_member" in non_csv_classifications:
+        review_reasons.append("unexpected_non_csv_archive_members")
+    if "suspicious_archive_content" in non_csv_classifications:
+        review_reasons.append("suspicious_archive_content")
     review_reasons = sorted(set(review_reasons))
 
     warning_reasons: list[str] = []
@@ -2885,6 +2932,8 @@ def _validation_results(
         warning_reasons.append("quality_exception_evidence")
     if calendar_coverage.get("approved_missing_source_dates"):
         warning_reasons.append("approved_calendar_gaps_present")
+    if "harmless_archive_metadata" in non_csv_classifications:
+        warning_reasons.append("harmless_archive_metadata_present")
     warning_reasons = sorted(set(warning_reasons))
 
     if not structural_pass:
@@ -3106,6 +3155,7 @@ def run_ingestion(
             len(completed),
             calendar_coverage,
             source_assessment,
+            archive_member_selection,
         )
         write_json_atomic(staging / "schema_report.json", schema_report)
         write_json_atomic(staging / "quality_report.json", quality_report)

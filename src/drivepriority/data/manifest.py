@@ -21,10 +21,13 @@ PIPELINE_RUNTIME_PATHS = (
     "src/drivepriority/__init__.py",
     "src/drivepriority/data/__init__.py",
     "src/drivepriority/data/ingest.py",
+    "src/drivepriority/data/analyze.py",
     "src/drivepriority/data/manifest.py",
     "src/drivepriority/data/source_inventory.py",
+    "src/drivepriority/data/revalidate.py",
     "src/drivepriority/data/schema.py",
     "src/drivepriority/data/validate.py",
+    "src/drivepriority/data/workflow.py",
 )
 REQUIREMENTS_PATH = "requirements.txt"
 RECOVERY_DEPENDENCIES = ("duckdb", "pyarrow", "PyYAML")

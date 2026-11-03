@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "quarter": null,
+  "archive_sha256": null,
+  "decision": null,
+  "reviewed_by": null,
+  "reviewed_at": null,
+  "evidence_reference": null,
+  "notes": "Use decision authorized_post_run_review only for a documented, current approval. Never backdate evidence."
+}

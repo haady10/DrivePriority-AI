@@ -1,6 +1,17 @@
-# DrivePriority AI C1.2 master cleaning package
+# DrivePriority AI master cleaning, analysis, and revalidation package
 
 This code-only package supports Windows teammates without Git. It covers source inventory generation for every quarter from 2016 Q1 through 2026 Q2, but it never guesses teammate assignments, approvals, hashes, or missing-date decisions.
+
+The release entry point is `RUN_ME.cmd`. It provides four noninteractive commands that are safe for paths containing spaces:
+
+```text
+RUN_ME.cmd clean --quarter YYYYQn --archive ZIP --output DIR --evidence DIR --approvals FILE
+RUN_ME.cmd analyze --quarter-output DIR --analysis-output DIR
+RUN_ME.cmd revalidate --quarter-output DIR --analysis-output DIR --revalidation-output DIR
+RUN_ME.cmd status --root DIR
+```
+
+`analyze` reads immutable canonical Parquet and exception evidence through DuckDB, writes grouped collision evidence, and never changes the cleaned output. `revalidate` verifies all original hashes and Parquet metadata, binds analysis and any resolution/authorization evidence to the exact source manifest, and writes a new report in a new directory. It never edits historical validation results.
 
 ## Required inputs
 

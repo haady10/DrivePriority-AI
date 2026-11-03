@@ -73,6 +73,7 @@ class QualityStats:
         default_factory=dict
     )
     malformed_unclassifiable_failure_rows: int = 0
+    blank_physical_lines_ignored: int = 0
     date_min: str | None = None
     date_max: str | None = None
 
@@ -236,6 +237,7 @@ class QualityStats:
             "conflicting_duplicates",
             "serial_identity_collisions",
             "malformed_unclassifiable_failure_rows",
+            "blank_physical_lines_ignored",
         ):
             setattr(self, name, getattr(self, name) + getattr(other, name))
         for target_name in (
@@ -358,6 +360,7 @@ class QualityStats:
                 self.daily_malformed_identifiable_failure_flag_counts
             ),
             "malformed_unclassifiable_failure_rows": self.malformed_unclassifiable_failure_rows,
+            "blank_physical_lines_ignored": self.blank_physical_lines_ignored,
             "date_min": self.date_min,
             "date_max": self.date_max,
         }
@@ -428,6 +431,9 @@ class QualityStats:
             ),
             malformed_unclassifiable_failure_rows=int(
                 payload.get("malformed_unclassifiable_failure_rows", 0)
+            ),
+            blank_physical_lines_ignored=int(
+                payload.get("blank_physical_lines_ignored", 0)
             ),
             daily_source_failure_flag_counts={
                 key: dict(values)
@@ -597,6 +603,14 @@ def convert_record(
     if not _is_missing(capacity_token, missing_tokens):
         try:
             capacity = parse_unsigned_integer(capacity_token or "", INT64_MAX)
+            if capacity_token != str(capacity):
+                add_issue(
+                    "noncanonical_numeric_token",
+                    "capacity_bytes",
+                    capacity_token,
+                    "Exact source token is preserved because its spelling differs from the canonical integer",
+                    severity="warning",
+                )
         except (ValueError, OverflowError) as exc:
             add_issue(
                 "invalid_capacity_bytes",
@@ -619,6 +633,14 @@ def convert_record(
         )
     elif failure_token is not None and failure_token.strip() in {"0", "1"}:
         failure = int(failure_token.strip())
+        if failure_token != str(failure):
+            add_issue(
+                "noncanonical_numeric_token",
+                "failure",
+                failure_token,
+                "Exact source token is preserved because its spelling differs from the canonical integer",
+                severity="warning",
+            )
     else:
         add_issue(
             "invalid_failure_flag",
@@ -639,6 +661,14 @@ def convert_record(
             continue
         try:
             converted_smart[name] = parse_smart_integer(value_token or "")
+            if value_token != str(int(converted_smart[name])):
+                add_issue(
+                    "noncanonical_numeric_token",
+                    name,
+                    value_token,
+                    "Exact source token is preserved because its spelling differs from the canonical integer",
+                    severity="warning",
+                )
             if converted_smart[name] == 0:
                 smart_states[name] = "zero"
             elif converted_smart[name] < 0:
@@ -727,6 +757,19 @@ def canonical_fingerprint(row: Mapping[str, Any], fields: Sequence[str]) -> tupl
     return serialized, hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def comparison_model_key(value: str | None) -> str | None:
+    """Normalize demonstrated formatting-only model variants for comparison.
+
+    The original model is never changed.  This deliberately performs only
+    Unicode whitespace collapse, edge trimming, and case folding; it is not a
+    fuzzy matcher or an alias table.
+    """
+
+    if value is None:
+        return None
+    return " ".join(value.split()).casefold()
+
+
 class DuplicateTracker:
     """Disk-backed duplicate detection with member-level transactional checkpoints."""
 
@@ -753,6 +796,9 @@ class DuplicateTracker:
             CREATE TABLE IF NOT EXISTS serial_identities (
                 serial_number VARCHAR NOT NULL,
                 identity_signature VARCHAR NOT NULL,
+                model_key VARCHAR,
+                manufacturer_key VARCHAR,
+                known_capacity BIGINT,
                 first_observation_date DATE NOT NULL,
                 last_observation_date DATE NOT NULL,
                 first_source_file VARCHAR NOT NULL,
@@ -792,6 +838,9 @@ class DuplicateTracker:
         serials: list[str] = []
         fingerprints: list[str] = []
         identity_signatures: list[str] = []
+        identity_model_keys: list[str | None] = []
+        identity_manufacturer_keys: list[str | None] = []
+        identity_capacities: list[int | None] = []
         source_files: list[str] = []
         record_numbers: list[int] = []
         payloads: list[str] = []
@@ -802,83 +851,39 @@ class DuplicateTracker:
                 row, ("model", "manufacturer", "capacity_bytes")
             )
             payload = str(row.get("_source_raw_record_json", canonical_payload))
-            fingerprint = str(row.get("_source_raw_record_sha256", canonical_hash))
+            # Duplicate equivalence is based on canonical scientific values, not
+            # original header spelling.  Raw source JSON/hash remains attached
+            # to exception evidence for traceability.
+            fingerprint = canonical_hash
             identity_signature = str(row.get("_source_identity_signature", fallback_identity))
+            model_key = row.get(
+                "_source_identity_model_key", comparison_model_key(row.get("model"))
+            )
+            manufacturer_key = row.get(
+                "_source_identity_manufacturer_key", row.get("manufacturer")
+            )
+            capacity_value = row.get("capacity_bytes")
+            known_capacity = row.get(
+                "_source_identity_known_capacity",
+                capacity_value
+                if isinstance(capacity_value, int) and capacity_value > 0
+                else None,
+            )
             dates.append(row["date"])
             serials.append(row["serial_number"])
             fingerprints.append(fingerprint)
             identity_signatures.append(identity_signature)
+            identity_model_keys.append(None if model_key is None else str(model_key))
+            identity_manufacturer_keys.append(
+                None if manufacturer_key is None else str(manufacturer_key)
+            )
+            identity_capacities.append(
+                int(known_capacity) if isinstance(known_capacity, int) else None
+            )
             source_files.append(row["source_file"])
             record_numbers.append(record_number)
             payloads.append(payload)
             quarters.append(row["source_quarter"])
-
-        batch_collision_evidence: dict[
-            int, tuple[date, date, str, int]
-        ] = {}
-        collision_state: dict[str, dict[str, list[tuple[Any, ...]]]] = {}
-
-        def update_two(
-            candidates: list[tuple[Any, ...]],
-            candidate: tuple[Any, ...],
-            *,
-            reverse: bool,
-        ) -> None:
-            existing = next(
-                (index for index, value in enumerate(candidates) if value[0] == candidate[0]),
-                None,
-            )
-            candidate_key = (*candidate[1:], candidate[0])
-            if existing is not None:
-                existing_key = (*candidates[existing][1:], candidates[existing][0])
-                is_better = (
-                    candidate_key > existing_key
-                    if reverse
-                    else candidate_key < existing_key
-                )
-                if is_better:
-                    candidates[existing] = candidate
-                else:
-                    return
-            else:
-                candidates.append(candidate)
-            candidates.sort(key=lambda value: (*value[1:], value[0]), reverse=reverse)
-            del candidates[2:]
-
-        for ordinal, (serial, identity, observed_date, source_file, record_number) in enumerate(
-            zip(
-                serials,
-                identity_signatures,
-                dates,
-                source_files,
-                record_numbers,
-                strict=True,
-            )
-        ):
-            state = collision_state.setdefault(serial, {"first": [], "last": []})
-            first_different = next(
-                (value for value in state["first"] if value[0] != identity), None
-            )
-            last_different = next(
-                (value for value in state["last"] if value[0] != identity), None
-            )
-            if first_different is not None and last_different is not None:
-                batch_collision_evidence[ordinal] = (
-                    first_different[1],
-                    last_different[1],
-                    first_different[2],
-                    int(first_different[3]),
-                )
-            update_two(
-                state["first"],
-                (identity, observed_date, source_file, record_number),
-                reverse=False,
-            )
-            update_two(
-                state["last"],
-                (identity, observed_date),
-                reverse=True,
-            )
 
         batch = pa.table(
             {
@@ -887,6 +892,11 @@ class DuplicateTracker:
                 "serial_number": pa.array(serials, type=pa.string()),
                 "fingerprint": pa.array(fingerprints, type=pa.string()),
                 "identity_signature": pa.array(identity_signatures, type=pa.string()),
+                "model_key": pa.array(identity_model_keys, type=pa.string()),
+                "manufacturer_key": pa.array(
+                    identity_manufacturer_keys, type=pa.string()
+                ),
+                "known_capacity": pa.array(identity_capacities, type=pa.int64()),
                 "source_file": pa.array(source_files, type=pa.string()),
                 "source_record_number": pa.array(record_numbers, type=pa.uint64()),
             }
@@ -943,82 +953,60 @@ class DuplicateTracker:
 
             identity_collision_rows = self.connection.execute(
                 """
-                WITH relevant_history AS (
-                    SELECT history.*
-                    FROM serial_identities AS history
-                    WHERE history.serial_number IN (
-                        SELECT DISTINCT serial_number FROM _drivepriority_batch
-                    )
-                ), first_ranked AS (
-                    SELECT *,
-                           count(*) OVER (PARTITION BY serial_number) AS identity_count,
-                           row_number() OVER (
-                               PARTITION BY serial_number
-                               ORDER BY first_observation_date, first_source_file,
-                                        first_source_record_number, identity_signature
-                           ) AS first_rank
-                    FROM relevant_history
-                ), first_summary AS (
-                    SELECT serial_number, max(identity_count) AS identity_count,
-                           max(CASE WHEN first_rank = 1 THEN identity_signature END)
-                               AS first_identity_1,
-                           max(CASE WHEN first_rank = 1 THEN first_observation_date END)
-                               AS first_date_1,
-                           max(CASE WHEN first_rank = 1 THEN first_source_file END)
-                               AS first_file_1,
-                           max(CASE WHEN first_rank = 1 THEN first_source_record_number END)
-                               AS first_record_1,
-                           max(CASE WHEN first_rank = 2 THEN identity_signature END)
-                               AS first_identity_2,
-                           max(CASE WHEN first_rank = 2 THEN first_observation_date END)
-                               AS first_date_2,
-                           max(CASE WHEN first_rank = 2 THEN first_source_file END)
-                               AS first_file_2,
-                           max(CASE WHEN first_rank = 2 THEN first_source_record_number END)
-                               AS first_record_2
-                    FROM first_ranked
-                    WHERE first_rank <= 2
-                    GROUP BY serial_number
-                ), last_ranked AS (
+                WITH candidates AS (
+                    SELECT batch.batch_ordinal,
+                           history.first_observation_date AS first_date,
+                           history.last_observation_date AS last_date,
+                           history.first_source_file AS source_file,
+                           history.first_source_record_number AS source_record_number
+                    FROM _drivepriority_batch AS batch
+                    JOIN serial_identities AS history USING (serial_number)
+                    WHERE history.model_key IS DISTINCT FROM batch.model_key
+                       OR (
+                           history.manufacturer_key IS NOT NULL
+                           AND batch.manufacturer_key IS NOT NULL
+                           AND history.manufacturer_key <> batch.manufacturer_key
+                       )
+                       OR (
+                           history.known_capacity IS NOT NULL
+                           AND batch.known_capacity IS NOT NULL
+                           AND history.known_capacity <> batch.known_capacity
+                       )
+                    UNION ALL
+                    SELECT batch.batch_ordinal,
+                           prior.observation_date,
+                           prior.observation_date,
+                           prior.source_file,
+                           prior.source_record_number
+                    FROM _drivepriority_batch AS batch
+                    JOIN _drivepriority_batch AS prior
+                      ON prior.serial_number = batch.serial_number
+                     AND prior.batch_ordinal < batch.batch_ordinal
+                    WHERE prior.model_key IS DISTINCT FROM batch.model_key
+                       OR (
+                           prior.manufacturer_key IS NOT NULL
+                           AND batch.manufacturer_key IS NOT NULL
+                           AND prior.manufacturer_key <> batch.manufacturer_key
+                       )
+                       OR (
+                           prior.known_capacity IS NOT NULL
+                           AND batch.known_capacity IS NOT NULL
+                           AND prior.known_capacity <> batch.known_capacity
+                       )
+                ), ranked AS (
                     SELECT *, row_number() OVER (
-                        PARTITION BY serial_number
-                        ORDER BY last_observation_date DESC, identity_signature
-                    ) AS last_rank
-                    FROM relevant_history
-                ), last_summary AS (
-                    SELECT serial_number,
-                           max(CASE WHEN last_rank = 1 THEN identity_signature END)
-                               AS last_identity_1,
-                           max(CASE WHEN last_rank = 1 THEN last_observation_date END)
-                               AS last_date_1,
-                           max(CASE WHEN last_rank = 2 THEN identity_signature END)
-                               AS last_identity_2,
-                           max(CASE WHEN last_rank = 2 THEN last_observation_date END)
-                               AS last_date_2
-                    FROM last_ranked
-                    WHERE last_rank <= 2
-                    GROUP BY serial_number
-                ), history_summary AS (
-                    SELECT first_summary.*, last_summary.last_identity_1,
-                           last_summary.last_date_1, last_summary.last_identity_2,
-                           last_summary.last_date_2
-                    FROM first_summary
-                    JOIN last_summary USING (serial_number)
+                        PARTITION BY batch_ordinal
+                        ORDER BY first_date, source_file, source_record_number
+                    ) AS first_rank
+                    FROM candidates
                 )
-                SELECT batch.batch_ordinal,
-                       CASE WHEN history.first_identity_1 <> batch.identity_signature
-                            THEN history.first_date_1 ELSE history.first_date_2 END,
-                       CASE WHEN history.last_identity_1 <> batch.identity_signature
-                            THEN history.last_date_1 ELSE history.last_date_2 END,
-                       CASE WHEN history.first_identity_1 <> batch.identity_signature
-                            THEN history.first_file_1 ELSE history.first_file_2 END,
-                       CASE WHEN history.first_identity_1 <> batch.identity_signature
-                            THEN history.first_record_1 ELSE history.first_record_2 END
-                FROM _drivepriority_batch AS batch
-                JOIN history_summary AS history USING (serial_number)
-                WHERE history.identity_count > 1
-                   OR history.first_identity_1 <> batch.identity_signature
-                ORDER BY batch.batch_ordinal
+                SELECT batch_ordinal,
+                       min(first_date), max(last_date),
+                       max(CASE WHEN first_rank = 1 THEN source_file END),
+                       max(CASE WHEN first_rank = 1 THEN source_record_number END)
+                FROM ranked
+                GROUP BY batch_ordinal
+                ORDER BY batch_ordinal
                 """
             ).fetchall()
 
@@ -1060,12 +1048,14 @@ class DuplicateTracker:
                         ) AS last_observation_date
                     FROM _drivepriority_batch
                 )
-                SELECT serial_number, identity_signature,
+                SELECT serial_number, identity_signature, model_key,
+                       manufacturer_key, known_capacity,
                        first_observation_date, last_observation_date,
                        max(CASE WHEN first_rank = 1 THEN source_file END),
                        max(CASE WHEN first_rank = 1 THEN source_record_number END)
                 FROM ranked
-                GROUP BY serial_number, identity_signature,
+                GROUP BY serial_number, identity_signature, model_key,
+                         manufacturer_key, known_capacity,
                          first_observation_date, last_observation_date
                 ON CONFLICT (serial_number, identity_signature) DO UPDATE SET
                     first_source_file = CASE
@@ -1099,22 +1089,6 @@ class DuplicateTracker:
             int(ordinal): (first_date, last_date, first_file, int(first_record))
             for ordinal, first_date, last_date, first_file, first_record in identity_collision_rows
         }
-        for ordinal, batch_evidence in batch_collision_evidence.items():
-            existing = collision_by_ordinal.get(ordinal)
-            if existing is None:
-                collision_by_ordinal[ordinal] = batch_evidence
-                continue
-            first_candidates = [
-                (existing[0], existing[2], existing[3]),
-                (batch_evidence[0], batch_evidence[2], batch_evidence[3]),
-            ]
-            first_date, first_file, first_record = min(first_candidates)
-            collision_by_ordinal[ordinal] = (
-                first_date,
-                max(existing[1], batch_evidence[1]),
-                first_file,
-                int(first_record),
-            )
         issues: list[ConversionIssue] = []
         for ordinal in sorted(set(duplicate_by_ordinal) | set(collision_by_ordinal)):
             row, record_number, line_number = entries[ordinal]

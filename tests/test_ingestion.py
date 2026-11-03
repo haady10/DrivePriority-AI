@@ -415,8 +415,8 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     manifest = read_json(output / "source_manifest.json")
     assert manifest["source"]["url"] == SOURCE_URL
     assert manifest["source"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
-    assert manifest["manifest_version"] == "1.5.0"
-    assert manifest["software"]["pipeline_version"] == "0.1.6"
+    assert manifest["manifest_version"] == "1.6.0"
+    assert manifest["software"]["pipeline_version"] == "0.2.0"
     assert manifest["identity"]["pipeline"] == manifest["software"]["recovery_identity"]
     assert manifest["identity"]["pipeline"] == pipeline_recovery_identity(
         Path(__file__).resolve().parents[1]
@@ -562,6 +562,7 @@ def test_verified_appledouble_metadata_is_excluded_and_inventoried(
     assert selection["data_csv_members"][0]["filename"] == "2016-01-01.csv"
     assert selection["non_csv_members"][0]["archive_index"] == 2
     assert selection["non_csv_members"][0]["filename"] == "README.txt"
+    assert selection["non_csv_members"][0]["classification"] == "harmless_archive_metadata"
 
     run_ingestion(
         config_path=config,
@@ -2638,7 +2639,7 @@ SYNTHETIC_HISTORICAL_LAYOUTS = [
                 "smart_5_raw": [None],
                 "smart_9_raw": [Decimal(7)],
             },
-            "exception_codes": [],
+            "exception_codes": ["noncanonical_numeric_token"],
         },
         id="synthetic-2017-bom-layout",
     ),
@@ -2661,7 +2662,7 @@ SYNTHETIC_HISTORICAL_LAYOUTS = [
                 "smart_188_raw": [Decimal(7)],
                 "smart_190_normalized": [Decimal(0)],
             },
-            "exception_codes": [],
+            "exception_codes": ["noncanonical_numeric_token"],
         },
         id="synthetic-2018-transition-layout",
     ),
@@ -4146,3 +4147,130 @@ def test_corrupt_compressed_stream_fails_cleanly_before_publication(
     assert exit_code == 2
     assert "ERROR:" in capsys.readouterr().err
     assert not output.exists()
+
+
+def test_unknown_capacity_does_not_create_false_identity_collision(tmp_path: Path) -> None:
+    archive = write_archive(
+        tmp_path / "capacity-placeholder.zip",
+        {
+            "a.csv": [
+                BASE_HEADER,
+                ["2016-01-01", "SN-1", "Model A", "Vendor", "1000", "0"],
+                ["2016-01-02", "SN-1", "Model A", "Vendor", "-1", "0"],
+                ["2016-01-03", "SN-1", "Model A", "Vendor", "1000", "0"],
+            ]
+        },
+    )
+
+    run(tmp_path, archive)
+
+    exceptions = pq.read_table(tmp_path / "output" / "exceptions.parquet").to_pylist()
+    codes = [row["exception_code"] for row in exceptions]
+    assert codes.count("invalid_capacity_bytes") == 1
+    assert "serial_identity_collision" not in codes
+
+
+def test_identity_comparison_collapses_only_model_whitespace(tmp_path: Path) -> None:
+    archive = write_archive(
+        tmp_path / "model-formatting.zip",
+        {
+            "a.csv": [
+                BASE_HEADER,
+                ["2016-01-01", "SN-1", "ST 1000", "Vendor", "1000", "0"],
+                ["2016-01-02", "SN-1", "  st   1000 ", "Vendor", "1000", "0"],
+                ["2016-01-01", "SN-2", "Model A", "Vendor", "1000", "0"],
+                ["2016-01-02", "SN-2", "Model B", "Vendor", "1000", "0"],
+                ["2016-01-01", "SN-3", "Model C", "Vendor", "1000", "0"],
+                ["2016-01-02", "SN-3", "Model C", "Vendor", "2000", "0"],
+            ]
+        },
+    )
+
+    run(tmp_path, archive)
+
+    exceptions = pq.read_table(tmp_path / "output" / "exceptions.parquet").to_pylist()
+    collisions = [
+        row for row in exceptions if row["exception_code"] == "serial_identity_collision"
+    ]
+    assert {row["serial_number"] for row in collisions} == {"SN-2", "SN-3"}
+    rows = read_drive_data(tmp_path / "output").to_pylist()
+    assert {row["model"] for row in rows if row["serial_number"] == "SN-1"} == {
+        "ST 1000",
+        "  st   1000 ",
+    }
+
+
+def test_case_only_header_variants_remain_exact_duplicates(tmp_path: Path) -> None:
+    first = csv_text(
+        [BASE_HEADER, ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"]]
+    ).encode("utf-8")
+    second = csv_text(
+        [
+            [name.upper() for name in BASE_HEADER],
+            ["2016-01-01", "SN-1", "Model", "Vendor", "1000", "0"],
+        ]
+    ).encode("utf-8")
+    archive = write_raw_archive(tmp_path / "header-case.zip", {"a.csv": first, "b.csv": second})
+
+    run(tmp_path, archive)
+
+    exceptions = pq.read_table(tmp_path / "output" / "exceptions.parquet").to_pylist()
+    codes = [row["exception_code"] for row in exceptions]
+    assert "exact_duplicate" in codes
+    assert "conflicting_duplicate" not in codes
+
+
+def test_noncanonical_numeric_tokens_keep_exact_evidence(tmp_path: Path) -> None:
+    archive = write_archive(
+        tmp_path / "numeric-spelling.zip",
+        {
+            "a.csv": [
+                [*BASE_HEADER, "smart_5_raw", "smart_9_raw", "smart_10_raw", "smart_12_raw"],
+                [
+                    "2016-01-01",
+                    "SN-1",
+                    "Model",
+                    "Vendor",
+                    "001000",
+                    "0",
+                    "007",
+                    "+5",
+                    " 5",
+                    "-0",
+                ],
+            ]
+        },
+    )
+
+    run(tmp_path, archive)
+
+    row = read_drive_data(tmp_path / "output").to_pylist()[0]
+    assert row["capacity_bytes"] == 1000
+    assert [row[name] for name in ("smart_5_raw", "smart_9_raw", "smart_10_raw", "smart_12_raw")] == [
+        Decimal(7),
+        Decimal(5),
+        Decimal(5),
+        Decimal(0),
+    ]
+    exceptions = pq.read_table(tmp_path / "output" / "exceptions.parquet").to_pylist()
+    preserved = {
+        row["raw_value"]
+        for row in exceptions
+        if row["exception_code"] == "noncanonical_numeric_token"
+    }
+    assert preserved == {"001000", "007", "+5", " 5", "-0"}
+
+
+def test_trailing_blank_physical_lines_are_ignored_and_counted(tmp_path: Path) -> None:
+    payload = (
+        b"date,serial_number,model,manufacturer,capacity_bytes,failure\n"
+        b"2016-01-01,SN-1,Model,Vendor,1000,0\n\n\r\n"
+    )
+    archive = write_raw_archive(tmp_path / "blank-lines.zip", {"a.csv": payload})
+
+    result = run(tmp_path, archive)
+
+    assert result["input_rows"] == 1
+    quality = read_json(tmp_path / "output" / "quality_report.json")
+    assert quality["counts"]["blank_physical_lines_ignored"] == 2
+    assert quality["counts"]["malformed_rows"] == 0

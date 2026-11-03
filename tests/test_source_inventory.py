@@ -113,6 +113,21 @@ def test_supported_quarter_and_official_url_contract() -> None:
         official_archive_url("2026Q3")
 
 
+def test_central_inventory_represents_all_supported_quarters_as_pending() -> None:
+    inventory = yaml.safe_load(
+        (ROOT / "configs" / "source_inventory.yaml").read_text(encoding="utf-8")
+    )
+
+    assert set(inventory["quarters"]) == set(SUPPORTED_QUARTERS)
+    assert len(inventory["quarters"]) == 42
+    for quarter, entry in inventory["quarters"].items():
+        assert entry["original_filename"] == official_archive_filename(quarter)
+        assert entry["canonical_source_url"] == official_archive_url(quarter)
+        assert entry["verification_status"] == "pending_local_bytes"
+        assert entry["expected_sha256"] is None
+        assert entry["approver_identity"] is None
+
+
 def test_duplicate_cross_teammate_assignment_is_rejected(tmp_path: Path) -> None:
     assignments = tmp_path / "assignments.yaml"
     assignments.write_text(

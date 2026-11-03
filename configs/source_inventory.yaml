@@ -1,0 +1,552 @@
+version: "1.0.0"
+scope: "2016Q1 through 2026Q2"
+official_listing_url: "https://www.backblaze.com/cloud-storage/resources/hard-drive-test-data"
+publisher_checksum_policy: "Record publisher checksums only when independently available; local SHA-256 proves integrity, not publisher authenticity."
+expected_date_policy: "Complete calendar quarter unless a separately approved gap record is supplied."
+quarters:
+  2016Q1:
+    original_filename: "data_Q1_2016.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2016.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2016Q2:
+    original_filename: "data_Q2_2016.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2016.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2016Q3:
+    original_filename: "data_Q3_2016.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2016.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2016Q4:
+    original_filename: "data_Q4_2016.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2016.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2017Q1:
+    original_filename: "data_Q1_2017.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2017.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2017Q2:
+    original_filename: "data_Q2_2017.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2017.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2017Q3:
+    original_filename: "data_Q3_2017.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2017.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2017Q4:
+    original_filename: "data_Q4_2017.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2017.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2018Q1:
+    original_filename: "data_Q1_2018.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2018.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2018Q2:
+    original_filename: "data_Q2_2018.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2018.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2018Q3:
+    original_filename: "data_Q3_2018.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2018.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2018Q4:
+    original_filename: "data_Q4_2018.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2018.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2019Q1:
+    original_filename: "data_Q1_2019.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2019.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2019Q2:
+    original_filename: "data_Q2_2019.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2019.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2019Q3:
+    original_filename: "data_Q3_2019.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2019.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2019Q4:
+    original_filename: "data_Q4_2019.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2019.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2020Q1:
+    original_filename: "data_Q1_2020.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2020.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2020Q2:
+    original_filename: "data_Q2_2020.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2020.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2020Q3:
+    original_filename: "data_Q3_2020.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2020.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2020Q4:
+    original_filename: "data_Q4_2020.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2020.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2021Q1:
+    original_filename: "data_Q1_2021.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2021.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2021Q2:
+    original_filename: "data_Q2_2021.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2021.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2021Q3:
+    original_filename: "data_Q3_2021.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2021.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2021Q4:
+    original_filename: "data_Q4_2021.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2021.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2022Q1:
+    original_filename: "data_Q1_2022.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2022.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2022Q2:
+    original_filename: "data_Q2_2022.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2022.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2022Q3:
+    original_filename: "data_Q3_2022.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2022.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2022Q4:
+    original_filename: "data_Q4_2022.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2022.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2023Q1:
+    original_filename: "data_Q1_2023.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2023.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2023Q2:
+    original_filename: "data_Q2_2023.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2023.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2023Q3:
+    original_filename: "data_Q3_2023.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2023.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2023Q4:
+    original_filename: "data_Q4_2023.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2023.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2024Q1:
+    original_filename: "data_Q1_2024.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2024.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2024Q2:
+    original_filename: "data_Q2_2024.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2024.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2024Q3:
+    original_filename: "data_Q3_2024.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2024.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2024Q4:
+    original_filename: "data_Q4_2024.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2024.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2025Q1:
+    original_filename: "data_Q1_2025.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2025.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2025Q2:
+    original_filename: "data_Q2_2025.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2025.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2025Q3:
+    original_filename: "data_Q3_2025.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q3_2025.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2025Q4:
+    original_filename: "data_Q4_2025.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q4_2025.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2026Q1:
+    original_filename: "data_Q1_2026.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2026.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]
+  2026Q2:
+    original_filename: "data_Q2_2026.zip"
+    canonical_source_url: "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2026.zip"
+    verification_status: "pending_local_bytes"
+    expected_dates: "generated_from_calendar_quarter_during_scan"
+    approved_missing_dates: []
+    expected_bytes: null
+    expected_sha256: null
+    publisher_checksum_available: null
+    approver_identity: null
+    verified_at: null
+    evidence_reference: null
+    limitations: ["No local bytes or independent publisher checksum recorded in the frozen template"]

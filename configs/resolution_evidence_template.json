@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "quarter": null,
+  "source_manifest_sha256": null,
+  "reviewed_by": null,
+  "reviewed_at": null,
+  "evidence_reference": null,
+  "approved_serials": [],
+  "notes": "Populate only after reviewing collision_groups.parquet. Do not approve unresolved serials in bulk."
+}
