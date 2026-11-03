@@ -72,8 +72,9 @@ FINAL_REPORT_NAMES = {
     "validation_results.json",
     "exceptions.parquet",
 }
-MANIFEST_VERSION = "1.3.0"
+MANIFEST_VERSION = "1.5.0"
 ARCHIVE_MEMBER_SELECTION_VERSION = "1.1.0"
+SOURCE_INVENTORY_EVIDENCE_VERSION = "1.2.0"
 APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
 APPLEDOUBLE_VERSION = b"\x00\x02\x00\x00"
 PUBLICATION_MARKER = "publication_ready.json"
@@ -220,6 +221,65 @@ def _validate_source_inventory_configuration(payload: Mapping[str, Any]) -> None
             raise PipelineError(
                 f"Source inventory entry {quarter} expected_sha256 must be null or 64 hexadecimal characters"
             )
+        authenticity = entry.get("authenticity_evidence")
+        if expected_sha256 is not None:
+            if not isinstance(authenticity, dict) or authenticity.get("status") not in {
+                "publisher_checksum_verified",
+                "manual_review_approved",
+            }:
+                raise PipelineError(
+                    f"Source inventory entry {quarter} expected_sha256 requires approved authenticity_evidence"
+                )
+            for field_name in ("reviewed_by", "reviewed_at", "evidence_reference"):
+                value = authenticity.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    raise PipelineError(
+                        f"Source inventory entry {quarter} authenticity_evidence requires non-empty {field_name}"
+                    )
+            approved_sha256 = authenticity.get("approved_sha256")
+            if not isinstance(approved_sha256, str) or (
+                approved_sha256.lower() != expected_sha256.lower()
+            ):
+                raise PipelineError(
+                    f"Source inventory entry {quarter} authenticity_evidence SHA-256 mismatch"
+                )
+        elif isinstance(authenticity, dict) and authenticity.get("status") in {
+            "publisher_checksum_verified",
+            "manual_review_approved",
+        }:
+            raise PipelineError(
+                f"Source inventory entry {quarter} cannot approve authenticity without expected_sha256"
+            )
+        observed_bytes = entry.get("observed_bytes")
+        if observed_bytes is not None:
+            _positive_integer(
+                observed_bytes,
+                f"source_inventory.quarters.{quarter}.observed_bytes",
+            )
+        observed_sha256 = entry.get("observed_sha256")
+        if observed_sha256 is not None and not (
+            isinstance(observed_sha256, str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", observed_sha256)
+        ):
+            raise PipelineError(
+                f"Source inventory entry {quarter} observed_sha256 must be null or 64 hexadecimal characters"
+            )
+        if (observed_bytes is None) != (observed_sha256 is None):
+            raise PipelineError(
+                f"Source inventory entry {quarter} must provide observed_bytes and observed_sha256 together"
+            )
+        observation = entry.get("observation_evidence")
+        if observed_sha256 is not None:
+            if not isinstance(observation, dict):
+                raise PipelineError(
+                    f"Source inventory entry {quarter} requires observation_evidence for locally observed bytes"
+                )
+            for field_name in ("method", "observed_at", "evidence_reference"):
+                value = observation.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    raise PipelineError(
+                        f"Source inventory entry {quarter} observation_evidence requires non-empty {field_name}"
+                    )
 
         expected_dates = entry.get("expected_dates")
         approved_gaps = entry.get("approved_missing_dates")
@@ -656,11 +716,22 @@ def inspect_archive(
         for archive_index, info in sorted(csv_infos, key=lambda item: (item[1].filename.casefold(), item[0])):
             try:
                 with source.open(info, "r") as binary:
-                    header_bytes = binary.readline()
+                    header_bytes = bytearray()
+                    while byte := binary.read(1):
+                        header_bytes.extend(byte)
+                        if byte == b"\n":
+                            break
+                        if byte == b"\r":
+                            following = binary.read(1)
+                            if following == b"\n":
+                                header_bytes.extend(following)
+                            break
                     if not header_bytes:
                         raise StopIteration
-                    header_text = header_bytes.decode(encoding)
-                    headers = next(csv.reader([header_text], strict=True))
+                    with io.TextIOWrapper(
+                        io.BytesIO(header_bytes), encoding=encoding, newline=""
+                    ) as text:
+                        headers = next(csv.reader(text, strict=True))
             except StopIteration as exc:
                 raise PipelineError(f"CSV member is empty: {info.filename}") from exc
             except (UnicodeError, csv.Error, OSError) as exc:
@@ -766,6 +837,7 @@ def _assess_source_inventory(
 ) -> dict[str, Any]:
     inventory = config["source_inventory"]
     provenance = {
+        "contract_version": SOURCE_INVENTORY_EVIDENCE_VERSION,
         "status": inventory["status"],
         "provenance_reference": inventory.get("provenance_reference"),
         "verified_by": inventory.get("verified_by"),
@@ -815,9 +887,26 @@ def _assess_source_inventory(
             str(entry["expected_sha256"]).lower(),
             archive_sha256.lower(),
         )
+    if entry.get("observed_bytes") is not None:
+        require_match(
+            "observed_archive_bytes",
+            int(entry["observed_bytes"]),
+            archive.stat().st_size,
+        )
+        require_match(
+            "observed_archive_sha256",
+            str(entry["observed_sha256"]).lower(),
+            archive_sha256.lower(),
+        )
 
     review_reasons: list[str] = []
-    authenticity_verified = entry.get("expected_sha256") is not None
+    authenticity_evidence = entry.get("authenticity_evidence")
+    authenticity_verified = (
+        entry.get("expected_sha256") is not None
+        and isinstance(authenticity_evidence, Mapping)
+        and authenticity_evidence.get("status")
+        in {"publisher_checksum_verified", "manual_review_approved"}
+    )
     if not authenticity_verified:
         review_reasons.append("independent_archive_checksum_unavailable")
     return {
@@ -828,6 +917,10 @@ def _assess_source_inventory(
         "trusted_gap_evidence": True,
         "expected_dates": list(entry["expected_dates"]),
         "approved_missing_dates": sorted(entry["approved_missing_dates"]),
+        "local_observation_evidence": entry.get("observation_evidence"),
+        "independent_expected_bytes": entry.get("expected_bytes"),
+        "independent_expected_sha256": entry.get("expected_sha256"),
+        "authenticity_evidence": authenticity_evidence,
         "review_reasons": review_reasons,
         "checks": checks,
     }

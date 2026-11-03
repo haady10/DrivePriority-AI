@@ -45,7 +45,7 @@ During real-data acceptance, the official Backblaze page described the 2016 Q1 d
 
 ### Approved source inventory
 
-`configs/ingestion.yaml` contains the approved source-inventory structure but does not fabricate the 42 quarter entries. Its repository default is explicitly `unavailable` with an empty `quarters` mapping. Runs without a verified entry may be processed for evidence, but their validation status is `requires_review` and they are not eligible for central integration.
+`configs/ingestion.yaml` contains one evidence-backed inventory entry for 2016 Q1. The official Backblaze listing and direct archive URL are recorded, together with the locally observed filename, exact byte size, SHA-256, complete ZIP CRC result, archive-member counts, full expected quarter calendar, and an empty approved-gap list. Backblaze does not publish an independent SHA-256 or exact byte count for this historical archive, so the independent expectation fields remain null and this quarter remains `requires_review`. No other quarter is populated or implied.
 
 A verified inventory requires provenance reference, verifier, verification timestamp, and an approved quarter entry containing:
 
@@ -55,7 +55,7 @@ A verified inventory requires provenance reference, verifier, verification times
 - Expected archive byte size when independently available.
 - Expected SHA-256 when independently available.
 
-Available trusted evidence is enforced exactly. A URL, filename, size, or checksum mismatch stops before staging. If an independent checksum is unavailable, the manifest records that fact and the run remains `requires_review`; the pipeline never invents a checksum or gap approval.
+Available evidence is enforced exactly. A URL, filename, independently expected size/checksum, or locally observed size/checksum mismatch stops before staging. Locally observed bytes prevent silent substitution of the reviewed download but do not authenticate what Backblaze originally published. If an independent checksum is unavailable, the manifest records that fact and the run remains `requires_review`; the pipeline never invents a checksum or gap approval. Add another quarter only after recording its official URL, exact local observations, full calendar, evidence provenance, and any explicitly reviewed gaps.
 
 ## Dry run
 
@@ -67,9 +67,9 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m drivepriority.data.ingest `
     --config configs/ingestion.yaml `
     --quarter 2016Q1 `
-    --archive "D:\Backblaze\2016Q1.zip" `
+    --archive "D:\DrivePriority-Acceptance\Raw\data_Q1_2016.zip" `
     --output "D:\BackblazeProcessed\2016Q1" `
-    --source-url "https://www.backblaze.com/cloud-storage/resources/hard-drive-test-data" `
+    --source-url "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2016.zip" `
     --dry-run
 ```
 
@@ -85,9 +85,9 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m drivepriority.data.ingest `
     --config configs/ingestion.yaml `
     --quarter 2016Q1 `
-    --archive "D:\Backblaze\2016Q1.zip" `
+    --archive "D:\DrivePriority-Acceptance\Raw\data_Q1_2016.zip" `
     --output "D:\BackblazeProcessed\2016Q1" `
-    --source-url "https://www.backblaze.com/cloud-storage/resources/hard-drive-test-data"
+    --source-url "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2016.zip"
 ```
 
 Processing occurs in a sibling directory ending in `.staging`. The final output name appears only after structural validation succeeds and the staging directory is atomically renamed.
@@ -116,7 +116,9 @@ The non-Hive `data/2016Q1/` directory is the physical quarter partition. Every P
 
 ### Source manifest
 
-`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, approved-inventory assessment and provenance, complete archive-member selection and exclusions, processed member inventory, original headers, CRC results, configuration and hash, the installed Python implementation/version/cache tag and exact DuckDB/PyArrow/PyYAML versions, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, disk-space preflight, row counts, output checksums, validation status, and processing timestamps. Manifest version `1.3.0` and pipeline version `0.1.4` require archive-member-selection contract `1.1.0` and exact fresh-source selection reconciliation during reuse and recovery; they do not change the canonical data or exception schemas. Startup requires the installed core dependency versions to match their exact `requirements.txt` locks. The installed runtime identity is hashed into the recovery identity, so a runtime-version change cannot resume staged work or claim completed-output reuse under the prior environment. If Git metadata is unavailable, the commit and scoped dirty state are recorded as unknown rather than being reported as clean; the exact source, requirements, and installed-runtime hashes remain mandatory.
+`source_manifest.json` records the source URL and local archive identity, byte size, SHA-256, approved-inventory assessment and provenance, complete archive-member selection and exclusions, processed member inventory, original headers, CRC results, configuration and hash, the installed Python implementation/version/cache tag and exact DuckDB/PyArrow/PyYAML versions, Git provenance when available, pipeline version, deterministic runtime-source hash, requirements hash, pipeline-scoped dirty state, disk-space preflight, row counts, output checksums, validation status, and processing timestamps. Manifest version `1.5.0` and pipeline version `0.1.6` add the C1.2 evidence-based manual source-approval contract while preserving archive-member-selection contract `1.1.0`; they do not change the canonical data or exception schemas. Startup requires the installed core dependency versions to match their exact `requirements.txt` locks. The installed runtime identity is hashed into the recovery identity, so a runtime-version change cannot resume staged work or claim completed-output reuse under the prior environment.
+
+In a Git checkout, `git_commit`, `pipeline_scoped_dirty`, and `git_metadata_available: true` record the scoped repository state. In a code-only ZIP, no commit is invented: the first two fields are null and `git_metadata_available` is false. ZIP users verify the separately published package SHA-256, the release file-hash inventory, `runtime_source_sha256`, `requirements_sha256`, the configuration SHA-256, and the installed-runtime hash. Missing Git metadata never converts an unavailable source identity into a clean checkout.
 
 ### Reproducibility scope
 
@@ -215,15 +217,15 @@ If processing stops, the final output directory remains absent and the matching 
 
 A CSV parsing or Unicode decoding failure atomically writes `processing_failure.json` in staging and marks `run_state.json` as failed. Report version `1.1.0` records the exact attempted logical record number separately from the last successfully decoded record, labels available physical line/byte positions as approximate, and includes archive SHA-256, member and processing sequence, sanitized exception type and description, completed-member state, and recovery requirement. Failed parser staging cannot be resumed or published; inspect the report and use an explicit `--restart`. Restart removes only the verified matching staging directory and does not touch sibling or completed outputs.
 
-Resume only with the same archive SHA-256, source URL, quarter, schema version, configuration hash, exact Git commit, pipeline version, deterministic runtime-source hash, requirements hash, installed Python and core dependency identity, and pipeline-scoped dirty state:
+Resume only with the same archive SHA-256, source URL, quarter, schema version, configuration hash, Git state when available (or the same explicit unavailable state in a ZIP), pipeline version, deterministic runtime-source hash, requirements hash, installed Python and core dependency identity, and pipeline-scoped dirty state:
 
 ```powershell
 .\.venv\Scripts\python.exe -m drivepriority.data.ingest `
     --config configs/ingestion.yaml `
     --quarter 2016Q1 `
-    --archive "D:\Backblaze\2016Q1.zip" `
+    --archive "D:\DrivePriority-Acceptance\Raw\data_Q1_2016.zip" `
     --output "D:\BackblazeProcessed\2016Q1" `
-    --source-url "https://www.backblaze.com/cloud-storage/resources/hard-drive-test-data" `
+    --source-url "https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q1_2016.zip" `
     --resume
 ```
 
@@ -286,7 +288,7 @@ The existing H2O smoke test is separate. It verifies software startup with synth
 - **CRC failure or malformed ZIP:** replace the local copy only after verifying the official source and expected SHA-256.
 - **Date outside assigned quarter:** review the member and assignment. The row remains in quarantine evidence.
 - **Missing source dates:** confirm the official archive inventory and disclose the gap; never fabricate rows.
-- **Source inventory unavailable:** preserve the local archive hash and evidence, but treat the result as `requires_review` until independently verified inventory evidence is provided.
+- **Independent source checksum unavailable:** enforce the recorded local size/SHA evidence, retain `requires_review`, and obtain independent publisher or research-lead authenticity evidence before admission. A local hash alone is not publisher authentication.
 - **Trusted source mismatch:** stop and escalate. Do not edit the inventory or archive merely to make the values agree.
 - **Insufficient disk space:** use an approved output volume with enough free space or revise safeguards through reviewed configuration; never disable the check silently.
 - **Invalid SMART token:** inspect the exact raw token in `exceptions.parquet`; do not round, clip, or substitute zero.

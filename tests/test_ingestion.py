@@ -59,6 +59,13 @@ def write_test_config(
     config["processing"]["exception_batch_rows"] = exception_batch_rows
     config["processing"]["exception_batch_bytes"] = exception_batch_bytes
     config["processing"]["parquet_row_group_rows"] = batch_rows
+    config["source_inventory"] = {
+        "status": "unavailable",
+        "provenance_reference": None,
+        "verified_by": None,
+        "verified_at": None,
+        "quarters": {},
+    }
     path = tmp_path / "ingestion.yaml"
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return path
@@ -188,6 +195,7 @@ def write_approved_config(
     *,
     approved_missing_dates: list[str] | None = None,
     include_checksum: bool = True,
+    observed_only: bool = False,
     batch_rows: int = 32,
 ) -> Path:
     path = write_test_config(tmp_path, batch_rows=batch_rows)
@@ -202,10 +210,42 @@ def write_approved_config(
                 "status": "approved",
                 "canonical_source_url": SOURCE_URL,
                 "original_filename": archive.name,
-                "expected_bytes": archive.stat().st_size,
+                "expected_bytes": (
+                    None if observed_only else archive.stat().st_size
+                ),
                 "expected_sha256": (
                     hashlib.sha256(archive.read_bytes()).hexdigest()
-                    if include_checksum
+                    if include_checksum and not observed_only
+                    else None
+                ),
+                "authenticity_evidence": (
+                    {
+                        "status": "publisher_checksum_verified",
+                        "reviewed_by": "automated-test-fixture",
+                        "reviewed_at": "2026-11-03T00:00:00Z",
+                        "evidence_reference": "synthetic-test-checksum",
+                        "approved_sha256": hashlib.sha256(
+                            archive.read_bytes()
+                        ).hexdigest(),
+                    }
+                    if include_checksum and not observed_only
+                    else {"status": "unverified"}
+                ),
+                "observed_bytes": (
+                    archive.stat().st_size if observed_only else None
+                ),
+                "observed_sha256": (
+                    hashlib.sha256(archive.read_bytes()).hexdigest()
+                    if observed_only
+                    else None
+                ),
+                "observation_evidence": (
+                    {
+                        "method": "synthetic local observation",
+                        "observed_at": "2026-11-03T00:00:00Z",
+                        "evidence_reference": "synthetic-test-fixture",
+                    }
+                    if observed_only
                     else None
                 ),
                 "expected_dates": q1_2016_dates(),
@@ -375,16 +415,22 @@ def test_normal_archive_ingestion_produces_reproducible_submission(tmp_path: Pat
     manifest = read_json(output / "source_manifest.json")
     assert manifest["source"]["url"] == SOURCE_URL
     assert manifest["source"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
-    assert manifest["manifest_version"] == "1.3.0"
-    assert manifest["software"]["pipeline_version"] == "0.1.4"
+    assert manifest["manifest_version"] == "1.5.0"
+    assert manifest["software"]["pipeline_version"] == "0.1.6"
     assert manifest["identity"]["pipeline"] == manifest["software"]["recovery_identity"]
     assert manifest["identity"]["pipeline"] == pipeline_recovery_identity(
         Path(__file__).resolve().parents[1]
     )
-    assert manifest["identity"]["pipeline"]["git_commit"]
+    if manifest["identity"]["pipeline"]["git_metadata_available"]:
+        assert manifest["identity"]["pipeline"]["git_commit"]
+        assert isinstance(
+            manifest["identity"]["pipeline"]["pipeline_scoped_dirty"], bool
+        )
+    else:
+        assert manifest["identity"]["pipeline"]["git_commit"] is None
+        assert manifest["identity"]["pipeline"]["pipeline_scoped_dirty"] is None
     assert len(manifest["identity"]["pipeline"]["runtime_source_sha256"]) == 64
     assert len(manifest["identity"]["pipeline"]["requirements_sha256"]) == 64
-    assert isinstance(manifest["identity"]["pipeline"]["pipeline_scoped_dirty"], bool)
     assert manifest["configuration"]["sha256"]
     assert all(entry["sha256"] for entry in manifest["outputs"])
     assert manifest["central_integration_required"] is True
@@ -408,6 +454,61 @@ def test_dry_run_reads_and_hashes_but_creates_no_output(tmp_path: Path) -> None:
     assert result["member_count"] == 2
     assert not output.exists()
     assert not output.with_name(output.name + ".staging").exists()
+
+
+@pytest.mark.parametrize(
+    ("line_ending", "bom"),
+    [
+        pytest.param(b"\n", False, id="lf"),
+        pytest.param(b"\r\n", False, id="crlf"),
+        pytest.param(b"\r", False, id="cr"),
+        pytest.param(b"\r", True, id="cr-with-utf8-bom"),
+    ],
+)
+def test_archive_header_reader_supports_csv_newline_conventions(
+    tmp_path: Path, line_ending: bytes, bom: bool
+) -> None:
+    header = ",".join(BASE_HEADER).encode("utf-8")
+    row = b"2016-01-01,SN-1,Model,Vendor,1000,0"
+    payload = (b"\xef\xbb\xbf" if bom else b"") + header + line_ending + row + line_ending
+    archive = write_raw_archive(tmp_path / "newlines.zip", {"2016-01-01.csv": payload})
+    configuration, _config_hash = load_configuration(write_test_config(tmp_path))
+
+    members, _inventory = ingest_module.inspect_archive(archive, configuration)
+
+    assert members[0].analysis.original_headers == tuple(BASE_HEADER)
+
+
+def test_cr_only_csv_in_zip_is_processed_without_changing_row_reader(tmp_path: Path) -> None:
+    payload = (
+        b"date,serial_number,model,manufacturer,capacity_bytes,failure\r"
+        b"2016-01-01,SN-CR,Model,Vendor,1000,0\r"
+    )
+    archive = write_raw_archive(tmp_path / "cr-only.zip", {"2016-01-01.csv": payload})
+
+    run(tmp_path, archive, "cr-only-output")
+
+    table = read_drive_data(tmp_path / "cr-only-output")
+    assert table.num_rows == 1
+    assert table.column("serial_number").to_pylist() == ["SN-CR"]
+
+
+def test_archive_header_reader_preserves_strict_malformed_csv_failure(tmp_path: Path) -> None:
+    payload = (
+        b'date,"serial_number,model,manufacturer,capacity_bytes,failure\r'
+        b"2016-01-01,SN-1,Model,Vendor,1000,0\r"
+    )
+    archive = write_raw_archive(tmp_path / "malformed-header.zip", {"2016-01-01.csv": payload})
+
+    with pytest.raises(PipelineError, match="Cannot read header.*unexpected end of data"):
+        run_ingestion(
+            config_path=write_test_config(tmp_path),
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / "malformed-header-output",
+            source_url=SOURCE_URL,
+            dry_run=True,
+        )
 
 
 def test_verified_appledouble_metadata_is_excluded_and_inventoried(
@@ -1050,6 +1151,39 @@ def test_runtime_source_change_changes_recovery_identity(tmp_path: Path) -> None
     assert before["git_metadata_available"] is False
 
 
+def test_gitless_release_identity_is_explicit_and_hash_verifiable(tmp_path: Path) -> None:
+    repository = write_identity_repository(tmp_path)
+
+    identity = pipeline_recovery_identity(repository)
+
+    assert identity["git_metadata_available"] is False
+    assert identity["git_commit"] is None
+    assert identity["pipeline_scoped_dirty"] is None
+    assert len(identity["runtime_source_sha256"]) == 64
+    assert len(identity["requirements_sha256"]) == 64
+    assert len(identity["runtime_environment_sha256"]) == 64
+
+
+def test_git_checkout_identity_records_commit_and_dirty_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repository = write_identity_repository(tmp_path)
+    monkeypatch.setattr(
+        "drivepriority.data.manifest.git_revision",
+        lambda _repository, *, pathspecs=None: {
+            "commit": "a" * 40,
+            "branch": "codex/test",
+            "dirty": True,
+        },
+    )
+
+    identity = pipeline_recovery_identity(repository)
+
+    assert identity["git_metadata_available"] is True
+    assert identity["git_commit"] == "a" * 40
+    assert identity["pipeline_scoped_dirty"] is True
+
+
 def test_requirements_change_changes_recovery_identity(tmp_path: Path) -> None:
     repository = write_identity_repository(tmp_path)
     before = pipeline_recovery_identity(repository)
@@ -1585,6 +1719,51 @@ def test_verified_inventory_without_independent_checksum_requires_review(tmp_pat
     assert "independent_archive_checksum_unavailable" in validation["review_reasons"]
 
 
+def test_locally_observed_archive_hash_is_enforced_but_not_authenticated(
+    tmp_path: Path,
+) -> None:
+    archive = complete_quarter_archive(tmp_path)
+    config = write_approved_config(tmp_path, archive, observed_only=True)
+    output = tmp_path / "locally-observed-source"
+
+    result = run_ingestion(
+        config_path=config,
+        quarter="2016Q1",
+        archive=archive,
+        output=output,
+        source_url=SOURCE_URL,
+    )
+
+    evidence = read_json(output / "source_manifest.json")["source"][
+        "approved_inventory_evidence"
+    ]
+    assert result["validation_status"] == "requires_review"
+    assert evidence["authenticity_verified"] is False
+    assert evidence["independent_expected_sha256"] is None
+    assert evidence["local_observation_evidence"]["method"] == (
+        "synthetic local observation"
+    )
+    assert "independent_archive_checksum_unavailable" in evidence["review_reasons"]
+    assert all(check["passed"] for check in evidence["checks"])
+
+
+def test_locally_observed_archive_hash_mismatch_is_rejected(tmp_path: Path) -> None:
+    archive = complete_quarter_archive(tmp_path)
+    config_path = write_approved_config(tmp_path, archive, observed_only=True)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["source_inventory"]["quarters"]["2016Q1"]["observed_sha256"] = "0" * 64
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(PipelineError, match="observed_archive_sha256"):
+        run_ingestion(
+            config_path=config_path,
+            quarter="2016Q1",
+            archive=archive,
+            output=tmp_path / "observed-mismatch",
+            source_url=SOURCE_URL,
+        )
+
+
 def test_verified_inventory_missing_quarter_entry_requires_review(tmp_path: Path) -> None:
     archive = complete_quarter_archive(tmp_path)
     config_path = write_test_config(tmp_path)
@@ -1655,6 +1834,8 @@ def test_trusted_inventory_mismatch_is_rejected(
         "expected_sha256": "0" * 64,
     }
     entry[evidence_field] = replacements[evidence_field]
+    if evidence_field == "expected_sha256":
+        entry["authenticity_evidence"]["approved_sha256"] = replacements[evidence_field]
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     output = tmp_path / f"mismatch-{evidence_field}"
 

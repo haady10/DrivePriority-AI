@@ -22,6 +22,7 @@ PIPELINE_RUNTIME_PATHS = (
     "src/drivepriority/data/__init__.py",
     "src/drivepriority/data/ingest.py",
     "src/drivepriority/data/manifest.py",
+    "src/drivepriority/data/source_inventory.py",
     "src/drivepriority/data/schema.py",
     "src/drivepriority/data/validate.py",
 )
