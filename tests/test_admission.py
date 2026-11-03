@@ -121,6 +121,52 @@ class AdmissionTests(unittest.TestCase):
         self.save()
         self.assertNotEqual(self.decide()['decision'], 'ADMIT')
 
+    def test_gitless_release_identity_is_admitted_when_independently_pinned(self):
+        runtime_hash = 'd' * 64
+        self.manifest['software'] = {
+            'git': {'commit': None},
+            'recovery_identity': {'runtime_source_sha256': runtime_hash},
+        }
+        self.save()
+
+        result = self.decide(
+            trusted_pipeline_commit=None,
+            trusted_runtime_source_sha256=runtime_hash,
+            trusted_release_sha256='e' * 64,
+        )
+
+        self.assertEqual(result['decision'], 'ADMIT')
+        self.assertEqual(
+            result['checks']['pipeline_identity'],
+            'gitless_release_and_runtime_source_hash',
+        )
+
+    def test_bound_revalidation_can_resolve_quality_review_but_not_source_auth(self):
+        self.validation['status'] = 'requires_review'
+        self.validation['central_integration_admission'] = {
+            'eligible': False,
+            'requires_explicit_review': True,
+        }
+        self.validation['review_reasons'] = ['serial_identity_collisions']
+        self.manifest['validation'] = self.validation
+        self.save()
+        revalidation = self.root.parent / 'revalidation'
+        revalidation.mkdir()
+        report = {
+            'quarter': '2016Q1',
+            'source_manifest_sha256': hashlib.sha256(
+                (self.root / 'source_manifest.json').read_bytes()
+            ).hexdigest(),
+            'status': 'passed_with_warnings',
+            'review_reasons': [],
+            'identity': {'remaining_unresolved_serials': 0},
+        }
+        (revalidation / 'revalidation_report.json').write_text(json.dumps(report))
+
+        result = self.decide(revalidation_root=revalidation)
+
+        self.assertEqual(result['decision'], 'ADMIT')
+
     def test_modified_output_hash(self):
         self.parquet.write_bytes(b'changed data')
         self.assertEqual(self.decide()['decision'], 'REJECT')

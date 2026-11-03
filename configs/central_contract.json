@@ -1,7 +1,7 @@
 {
   "contract_name": "DrivePriority AI central integration input contract",
-  "contract_version": "0.1.0-draft",
-  "status": "implementation_step1_only_not_approved_for_central_admission",
+  "contract_version": "1.0.0",
+  "status": "implemented_steps_1_through_7_fail_closed_release",
   "study_period": {
     "start": "2016-01-01",
     "end": "2026-06-30"
@@ -744,8 +744,8 @@
     "cross_quarter_identity_collisions_require_separate_resolution": true
   },
   "scope_limits": [
-    "This is a contract definition, not a completed source-integrity or admission audit.",
-    "No cleaned data can be admitted using Step 1 alone.",
+    "This contract does not itself establish source authenticity or quarter admission.",
+    "Every cleaned dataset must pass the independent admission gate.",
     "No cleaned datasets, frozen ingestion files or project repositories are modified."
   ],
   "reference": "Observed 2016Q1 schema_report.json and validation_results.json from DrivePriority_Team_Evidence.zip; other years may add columns after separate validation"

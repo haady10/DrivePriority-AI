@@ -53,20 +53,38 @@ def _validate_sources(sources: Mapping[str, Mapping[str, Any]], output: Path) ->
     for q, entry in sorted(sources.items()):
         if not isinstance(q, str) or not QUARTER.fullmatch(q):
             raise CentralWriteError(f'invalid quarter: {q!r}')
-        if not isinstance(entry, Mapping) or not all(k in entry for k in ('root', 'archive_sha256', 'pipeline_commit')):
+        if not isinstance(entry, Mapping) or not all(k in entry for k in ('root', 'archive_sha256')):
             raise CentralWriteError(f'missing independent trust anchors: {q}')
-        archive_hash, commit = entry['archive_sha256'], entry['pipeline_commit']
+        archive_hash = entry['archive_sha256']
+        commit = entry.get('pipeline_commit')
+        runtime_hash = entry.get('runtime_source_sha256')
+        release_hash = entry.get('release_sha256')
         if not isinstance(archive_hash, str) or not SHA256.fullmatch(archive_hash):
             raise CentralWriteError(f'invalid trusted archive hash: {q}')
-        if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
-            raise CentralWriteError(f'invalid trusted pipeline commit: {q}')
+        if commit is not None:
+            if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
+                raise CentralWriteError(f'invalid trusted pipeline commit: {q}')
+        elif (
+            not isinstance(runtime_hash, str)
+            or not SHA256.fullmatch(runtime_hash)
+            or not isinstance(release_hash, str)
+            or not SHA256.fullmatch(release_hash)
+        ):
+            raise CentralWriteError(f'invalid Gitless release trust anchors: {q}')
         root = _real_dir(entry['root'])
         if root in roots:
             raise CentralWriteError('duplicate quarter input location')
         if root == output or root in output.parents or output in root.parents:
             raise CentralWriteError('input and output directories must be separate')
         roots.append(root)
-        trusted[q] = {'root': root, 'archive_sha256': archive_hash.lower(), 'pipeline_commit': commit.lower()}
+        trusted[q] = {
+            'root': root,
+            'archive_sha256': archive_hash.lower(),
+            'pipeline_commit': commit.lower() if isinstance(commit, str) else None,
+            'runtime_source_sha256': runtime_hash.lower() if isinstance(runtime_hash, str) else None,
+            'release_sha256': release_hash.lower() if isinstance(release_hash, str) else None,
+            'revalidation_root': entry.get('revalidation_root'),
+        }
     return trusted
 
 
@@ -101,7 +119,10 @@ def integrate_quarters(sources: Mapping[str, Mapping[str, Any]], output_dir: str
         root = item['root']
         decision = check_quarter(root, expected_quarter=q, contract_path=contract_path,
                                  trusted_archive_sha256=item['archive_sha256'],
-                                 trusted_pipeline_commit=item['pipeline_commit'])
+                                 trusted_pipeline_commit=item['pipeline_commit'],
+                                 trusted_runtime_source_sha256=item['runtime_source_sha256'],
+                                 trusted_release_sha256=item['release_sha256'],
+                                 revalidation_root=item['revalidation_root'])
         if decision.get('decision') != 'ADMIT':
             raise CentralWriteError(f'{q} not admitted: {decision.get("decision")}; {decision.get("reasons")}')
         manifest_path = root / 'source_manifest.json'
@@ -125,7 +146,10 @@ def integrate_quarters(sources: Mapping[str, Mapping[str, Any]], output_dir: str
                          'source_manifest': str(manifest_path),
                          'source_rows': decision['checks'].get('parquet_rows'),
                          'archive_sha256': item['archive_sha256'],
-                         'pipeline_commit': item['pipeline_commit']}
+                         'pipeline_commit': item['pipeline_commit'],
+                         'runtime_source_sha256': item['runtime_source_sha256'],
+                         'release_sha256': item['release_sha256'],
+                         'revalidation_report': item['revalidation_root']}
 
     plan, union_schema = arrow_plan(schemas)
     staging = parent / ('.' + output.name + '.staging-' + uuid.uuid4().hex)

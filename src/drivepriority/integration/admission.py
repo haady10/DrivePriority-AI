@@ -65,7 +65,10 @@ def _sha256(path: Path) -> str:
 def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
                   contract_path: str | Path | None = None,
                   trusted_archive_sha256: str | None = None,
-                  trusted_pipeline_commit: str | None = None) -> dict[str, Any]:
+                  trusted_pipeline_commit: str | None = None,
+                  trusted_runtime_source_sha256: str | None = None,
+                  trusted_release_sha256: str | None = None,
+                  revalidation_root: str | Path | None = None) -> dict[str, Any]:
     """Return ADMIT / REVIEW / REJECT, with evidence. Never writes to root.
 
     ADMIT requires caller-provided trusted source archive hash AND pinned Git commit;
@@ -106,6 +109,36 @@ def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
         reasons.append("invalid or out-of-scope quarter")
         return result
 
+    revalidation_approved = False
+    if revalidation_root is not None:
+        revalidation_path = Path(revalidation_root).expanduser().resolve()
+        revalidation = _load_json(
+            revalidation_path, "revalidation_report.json", reasons
+        )
+        if revalidation is not None:
+            manifest_sha = _sha256(root / "source_manifest.json")
+            if revalidation.get("quarter") != quarter:
+                reasons.append("revalidation quarter mismatch")
+            elif revalidation.get("source_manifest_sha256") != manifest_sha:
+                reasons.append("revalidation source manifest mismatch")
+            elif revalidation.get("status") not in ("passed", "passed_with_warnings"):
+                reasons.append("revalidation has not resolved all blocking findings")
+            elif revalidation.get("review_reasons"):
+                reasons.append("revalidation still contains review reasons")
+            elif (
+                revalidation.get("identity", {}).get("remaining_unresolved_serials")
+                != 0
+            ):
+                reasons.append("revalidation retains unresolved identity ambiguity")
+            else:
+                revalidation_approved = True
+                checks["revalidation"] = {
+                    "status": revalidation.get("status"),
+                    "sha256": _sha256(
+                        revalidation_path / "revalidation_report.json"
+                    ),
+                }
+
     status = validation.get("status")
     admission = validation.get("central_integration_admission")
     mv = manifest.get("validation")
@@ -117,11 +150,20 @@ def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
         reasons.append("manifest processing not complete")
     if status not in ("passed", "passed_with_warnings", "requires_review", "failed"):
         reasons.append("unknown or missing validation status")
-    elif status != "passed":
+    elif status != "passed" and not revalidation_approved:
         reasons.append(f"validation status is {status}; explicit exception review or rejection required")
-    if not isinstance(admission, dict) or admission.get("eligible") is not True or admission.get("requires_explicit_review") is True:
+    if (
+        not revalidation_approved
+        and (
+            not isinstance(admission, dict)
+            or admission.get("eligible") is not True
+            or admission.get("requires_explicit_review") is True
+        )
+    ):
         reasons.append("positive, non-review central admission absent")
-    if validation.get("review_reasons") or validation.get("warning_reasons"):
+    if not revalidation_approved and (
+        validation.get("review_reasons") or validation.get("warning_reasons")
+    ):
         reasons.append("unresolved validation review or warning reasons")
     if not isinstance(validation.get("checks"), list) or not validation["checks"]:
         reasons.append("validation checks missing")
@@ -143,15 +185,38 @@ def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
     checks["schema_fields"] = len(fields) if isinstance(fields, list) else None
 
     source = manifest.get("source")
-    git = (manifest.get("software") or {}).get("git")
+    software = manifest.get("software") or {}
+    git = software.get("git")
+    recovery = software.get("recovery_identity") or {}
     if not isinstance(source, dict) or not isinstance(source.get("sha256"), str) or not HEX64.fullmatch(source["sha256"]):
         reasons.append("missing source archive hash")
     elif not isinstance(trusted_archive_sha256, str) or source["sha256"].lower() != trusted_archive_sha256.lower():
         reasons.append("source archive hash not matched to separately trusted inventory")
-    if not isinstance(git, dict) or not isinstance(git.get("commit"), str) or not GIT_COMMIT.fullmatch(git["commit"]):
-        reasons.append("missing recorded Git commit")
-    elif not isinstance(trusted_pipeline_commit, str) or git["commit"].lower() != trusted_pipeline_commit.lower():
-        reasons.append("Git commit not matched to independently pinned pipeline")
+    recorded_commit = git.get("commit") if isinstance(git, dict) else None
+    if isinstance(recorded_commit, str) and GIT_COMMIT.fullmatch(recorded_commit):
+        if (
+            not isinstance(trusted_pipeline_commit, str)
+            or recorded_commit.lower() != trusted_pipeline_commit.lower()
+        ):
+            reasons.append("Git commit not matched to independently pinned pipeline")
+        else:
+            checks["pipeline_identity"] = "git_commit"
+    else:
+        runtime_hash = recovery.get("runtime_source_sha256")
+        if (
+            not isinstance(runtime_hash, str)
+            or not HEX64.fullmatch(runtime_hash)
+            or not isinstance(trusted_runtime_source_sha256, str)
+            or runtime_hash.lower() != trusted_runtime_source_sha256.lower()
+        ):
+            reasons.append("Gitless runtime source hash not independently pinned")
+        elif not isinstance(trusted_release_sha256, str) or not HEX64.fullmatch(
+            trusted_release_sha256
+        ):
+            reasons.append("Gitless release package hash not independently pinned")
+        else:
+            checks["pipeline_identity"] = "gitless_release_and_runtime_source_hash"
+            checks["release_sha256"] = trusted_release_sha256.lower()
     auth = (source or {}).get("approved_inventory_evidence") if isinstance(source, dict) else None
     if not isinstance(auth, dict) or auth.get("authenticity_verified") is not True:
         reasons.append("official source authenticity unverified")
@@ -246,13 +311,20 @@ def main() -> int:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--quarter", required=True)
     parser.add_argument("--trusted-archive-sha256", required=True)
-    parser.add_argument("--trusted-pipeline-commit", required=True)
+    identity = parser.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--trusted-pipeline-commit")
+    identity.add_argument("--trusted-runtime-source-sha256")
+    parser.add_argument("--trusted-release-sha256")
+    parser.add_argument("--revalidation-root")
     parser.add_argument("--contract", help="Central contract JSON; defaults to checked-in config")
     args = parser.parse_args()
     result = check_quarter(args.output_root, expected_quarter=args.quarter,
                            contract_path=args.contract,
                            trusted_archive_sha256=args.trusted_archive_sha256,
-                           trusted_pipeline_commit=args.trusted_pipeline_commit)
+                           trusted_pipeline_commit=args.trusted_pipeline_commit,
+                           trusted_runtime_source_sha256=args.trusted_runtime_source_sha256,
+                           trusted_release_sha256=args.trusted_release_sha256,
+                           revalidation_root=args.revalidation_root)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["decision"] == "ADMIT" else 2
 

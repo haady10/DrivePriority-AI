@@ -101,8 +101,19 @@ def validate_snapshot(root: str | Path, *, batch_size: int = 8192) -> dict[str, 
                 if not isinstance(metadata.get(key), str) or not pattern.fullmatch(metadata[key]):
                     raise ValueError('missing provenance hash for ' + q)
             commit = metadata.get('pipeline_commit')
-            if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-fA-F]{40}', commit):
-                raise ValueError('missing pipeline commit for ' + q)
+            runtime_hash = metadata.get('runtime_source_sha256')
+            release_hash = metadata.get('release_sha256')
+            commit_valid = isinstance(commit, str) and bool(
+                re.fullmatch(r'[0-9a-fA-F]{40}', commit)
+            )
+            gitless_valid = (
+                isinstance(runtime_hash, str)
+                and bool(SHA256.fullmatch(runtime_hash))
+                and isinstance(release_hash, str)
+                and bool(SHA256.fullmatch(release_hash))
+            )
+            if not (commit_valid or gitless_valid):
+                raise ValueError('missing independently pinned pipeline identity for ' + q)
             if metadata['source_rows'] != metadata['integrated_rows']:
                 raise ValueError('source and integrated row totals disagree for ' + q)
             declared[q] = {'rows': 0, 'failure_rows': 0, 'files': 0, 'paths': set()}
