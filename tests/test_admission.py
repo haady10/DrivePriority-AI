@@ -150,7 +150,7 @@ class AdmissionTests(unittest.TestCase):
         self.validation['review_reasons'] = ['serial_identity_collisions']
         self.manifest['validation'] = self.validation
         self.save()
-        revalidation = self.root.parent / 'revalidation'
+        revalidation = self.root / 'revalidation'
         revalidation.mkdir()
         report = {
             'quarter': '2016Q1',
