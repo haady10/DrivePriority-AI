@@ -3778,6 +3778,35 @@ def test_header_reader_keeps_quoted_terminators_and_rejects_unbounded_headers() 
         ingest_module._read_header_record_bytes(io.BytesIO(oversized))
 
 
+@pytest.mark.parametrize("terminator", [b"\n", b"\r\n", b"\r"], ids=["lf", "crlf", "cr"])
+def test_header_limit_is_enforced_even_when_terminator_follows_in_same_chunk(
+    terminator: bytes,
+) -> None:
+    # Regression: the limit was checked only after scanning a whole read chunk,
+    # so a header slightly over the limit was returned when its terminator was
+    # found in that chunk.
+    limit = ingest_module.MAXIMUM_HEADER_BYTES
+    trailing = b"2016-01-01,SN,M" + terminator
+
+    at_limit = b"a" * (limit - 1) + terminator[:1]
+    assert ingest_module._read_header_record_bytes(
+        io.BytesIO(at_limit + terminator[1:] + trailing)
+    ) == at_limit
+
+    for overflow in (1, 1000, ingest_module.HEADER_SCAN_CHUNK_BYTES - 2):
+        oversized = b"a" * (limit - 1 + overflow) + terminator + trailing
+        with pytest.raises(csv.Error, match="header record exceeds"):
+            ingest_module._read_header_record_bytes(io.BytesIO(oversized))
+
+    unterminated_at_limit = b"a" * limit
+    assert (
+        ingest_module._read_header_record_bytes(io.BytesIO(unterminated_at_limit))
+        == unterminated_at_limit
+    )
+    with pytest.raises(csv.Error, match="header record exceeds"):
+        ingest_module._read_header_record_bytes(io.BytesIO(b"a" * (limit + 1)))
+
+
 def test_cr_only_member_interruption_resumes_with_verified_checkpoints(
     tmp_path: Path,
 ) -> None:

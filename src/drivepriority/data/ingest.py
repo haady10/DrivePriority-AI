@@ -614,19 +614,23 @@ def _read_header_record_bytes(binary: Any) -> bytes:
     while True:
         chunk = binary.read(HEADER_SCAN_CHUNK_BYTES)
         if not chunk:
+            # A final header without a terminator is still subject to the limit.
             return bytes(buffer)
         buffer.extend(chunk)
         while scanned < len(buffer):
+            # The header record, including its terminator, may occupy at most
+            # MAXIMUM_HEADER_BYTES. Enforce the limit before returning, so a
+            # terminator found later in the same read chunk cannot bypass it.
+            if scanned >= MAXIMUM_HEADER_BYTES:
+                raise csv.Error(
+                    f"header record exceeds {MAXIMUM_HEADER_BYTES} bytes"
+                )
             byte = buffer[scanned]
             if byte == 0x22:
                 in_quotes = not in_quotes
             elif not in_quotes and byte in (0x0A, 0x0D):
                 return bytes(buffer[: scanned + 1])
             scanned += 1
-        if len(buffer) > MAXIMUM_HEADER_BYTES:
-            raise csv.Error(
-                f"header record exceeds {MAXIMUM_HEADER_BYTES} bytes without a line terminator"
-            )
 
 
 def inspect_archive(
