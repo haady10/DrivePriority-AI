@@ -25,6 +25,8 @@ if errorlevel 1 (
 )
 
 if "%~1"=="" goto :help
+if /i "%~1"=="help" goto :help
+if /i "%~1"=="--help" goto :help
 "%DP_PYTHON%" -B -m drivepriority.data.workflow %*
 exit /b %ERRORLEVEL%
 
