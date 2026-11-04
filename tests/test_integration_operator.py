@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 import zipfile
@@ -84,6 +84,56 @@ def test_package_inspection_supports_nested_layout_and_binds_evidence(tmp_path: 
     assert result["validation_status"] == "passed"
     assert result["trust"]["pipeline_commit"] == COMMIT
     assert result["zip_members"] == 5
+
+
+def test_windows_70_character_root_avoids_legacy_max_path_and_extracts(tmp_path: Path) -> None:
+    root = PureWindowsPath("C:\\" + "r" * 67)
+    assert len(str(root)) == 70
+    package_hash = "a" * 64
+    nested = PureWindowsPath(
+        "2016Q2_Submission/Analysis/run-001/analysis_manifest.json"
+    )
+    legacy_staging = (
+        root
+        / ".Integration_Work"
+        / "Packages"
+        / ("." + package_hash + ".staging-" + "0" * 32)
+        / nested
+    )
+    target, staging = operator._cache_paths(
+        root / ".Integration_Work", package_hash, "0" * 32
+    )
+    assert len(str(legacy_staging)) == 262
+    assert len(str(target / nested)) < 260
+    assert len(str(staging / nested)) < 260
+
+    package = make_evidence_zip(tmp_path)
+    work = tmp_path / ".Integration_Work"
+    result = operator.inspect_package(package, work)
+    actual_target, _ = operator._cache_paths(
+        work, result["package_sha256"], "unused-token"
+    )
+    assert (
+        actual_target
+        / "arbitrary"
+        / "cleaned"
+        / "source_manifest.json"
+    ).is_file()
+
+
+def test_short_cache_prefix_collision_fails_closed(tmp_path: Path) -> None:
+    work = tmp_path / ".Integration_Work"
+    first_hash = "a" * 64
+    colliding_hash = "a" * 20 + "b" * 44
+    target, _ = operator._cache_paths(work, first_hash, "first")
+    target.mkdir(parents=True)
+    (target / ".drivepriority-package.json").write_text(
+        json.dumps({"package_sha256": first_hash}), encoding="utf-8"
+    )
+    with pytest.raises(operator.OperatorError, match="Cached package identity mismatch"):
+        operator._extract_verified(
+            tmp_path / "not-opened.zip", colliding_hash, work
+        )
 
 
 @pytest.mark.parametrize("damage", ["missing", "corrupt"])

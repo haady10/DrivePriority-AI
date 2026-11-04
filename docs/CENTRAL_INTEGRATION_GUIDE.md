@@ -1,8 +1,10 @@
-# DrivePriority AI central integration 1.1.0
+# DrivePriority AI central integration 1.1.1
 
-Version 1.1.0 adds the automatic incremental ZIP operator and Windows launcher.
-The admission and integration contracts remain unchanged from 1.0.1 and accept
-DrivePriority cleaning revalidation 1.1.0.
+Version 1.1.1 shortens hash-addressed extraction and staging paths for Windows
+systems where `LongPathsEnabled=0`. The complete package SHA-256 remains in the
+cache marker and prefix collisions fail closed. Version 1.1.0 added the automatic
+incremental ZIP operator and Windows launcher. Admission and integration contracts
+remain unchanged from 1.0.1 and accept DrivePriority cleaning revalidation 1.1.0.
 
 Use only immutable quarter outputs that pass the admission gate. Git checkouts may be pinned by commit; Git-free cleaning releases must be pinned by both the published release ZIP SHA-256 and the runtime-source SHA-256 recorded in the source manifest. A bound revalidation report may resolve quality-review findings, but it cannot override source-authenticity, structural-integrity, or authorization failures.
 
@@ -41,7 +43,7 @@ Every successful change creates a new immutable `Snapshot-NNNN`. Re-running with
 unchanged ZIPs validates and skips them. A different package hash for an already
 integrated quarter is reported as a conflict and is never substituted. The durable
 inventory is `Reports/integration_inventory.json`; beginner-readable and JSON run
-reports are written beside it. Hash-addressed extracted evidence under
+reports are written beside it. Short-directory, full-hash-verified evidence under
 `.Integration_Work` must be retained because immutable central manifests preserve
 references to the admitted source evidence.
 

@@ -20,7 +20,8 @@ from drivepriority.integration.central_writer import CentralWriteError, integrat
 from drivepriority.integration.incremental import IncrementalError, incremental_update
 
 
-OPERATOR_VERSION = "1.1.0"
+OPERATOR_VERSION = "1.1.1"
+STATE_VERSION = "1.1.0"
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 GIT_COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 QUARTER = re.compile(r"20(?:1[6-9]|2[0-6])Q[1-4]\Z")
@@ -104,8 +105,13 @@ def _verify_zip(path: Path) -> tuple[str, list[zipfile.ZipInfo]]:
     return package_sha, infos
 
 
+def _cache_paths(work: Path, package_sha: str, token: str) -> tuple[Path, Path]:
+    """Return short same-volume paths; the marker retains the complete SHA-256."""
+    return work / "P" / package_sha[:20], work / "S" / token[:12]
+
+
 def _extract_verified(path: Path, package_sha: str, work: Path) -> Path:
-    target = work / "Packages" / package_sha
+    target, staging = _cache_paths(work, package_sha, uuid.uuid4().hex)
     marker = target / ".drivepriority-package.json"
     if target.exists():
         if not marker.is_file() or _json(marker).get("package_sha256") != package_sha:
@@ -134,7 +140,7 @@ def _extract_verified(path: Path, package_sha: str, work: Path) -> Path:
                 raise OperatorError(f"Cached package content mismatch: {relative}")
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
-    staging = target.parent / ("." + package_sha + ".staging-" + uuid.uuid4().hex)
+    staging.parent.mkdir(parents=True, exist_ok=True)
     staging.mkdir()
     try:
         with zipfile.ZipFile(path) as archive:
@@ -288,9 +294,9 @@ def inspect_package(zip_path: Path, work: Path, *, release_registry: Path | None
 
 def _load_inventory(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {"version": OPERATOR_VERSION, "current_snapshot": None, "quarters": {}}
+        return {"version": STATE_VERSION, "current_snapshot": None, "quarters": {}}
     value = _json(path)
-    if value.get("version") != OPERATOR_VERSION or not isinstance(value.get("quarters"), dict):
+    if value.get("version") != STATE_VERSION or not isinstance(value.get("quarters"), dict):
         raise OperatorError("Integration inventory version or structure is invalid")
     return value
 
@@ -433,7 +439,7 @@ def run_integration(
         for item in additions.values():
             item["integration_version"] = OPERATOR_VERSION
             item["admitted_snapshot"] = str(output.resolve())
-        planned = {"version": OPERATOR_VERSION, "output": str(output), "additions": additions}
+        planned = {"version": STATE_VERSION, "output": str(output), "additions": additions}
         if journal_path.exists() and _json(journal_path) != planned:
             raise OperatorError("Pending integration journal conflicts with discovered packages")
         _atomic_json(journal_path, planned)
