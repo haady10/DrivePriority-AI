@@ -1,0 +1,47 @@
+DrivePriority AI Central Integration v1.1.0
+===========================================
+
+Purpose
+-------
+This package incrementally combines independently approved quarterly cleaning
+packages. It never changes the original quarter ZIP files.
+
+One-time setup
+--------------
+1. Extract this whole ZIP to a local Windows folder. Paths containing spaces are OK.
+2. Use the approved DrivePriority Python 3.11 environment with the exact packages
+   listed in requirements.txt.
+3. If the environment is not inside this folder as .venv, set DRIVEPRIORITY_PYTHON
+   to its python.exe path before launching.
+
+Normal use
+----------
+1. Copy completed quarter ZIP files into Input_Quarters. Do not extract them.
+2. Double-click RUN_INTEGRATION.cmd.
+3. Read the newest .txt report in Reports.
+4. Find the current immutable dataset under Integrated_Data.
+5. Later, add more completed quarter ZIPs and run the same launcher again.
+
+Admission policy
+----------------
+Only packages accepted by the existing Central Integration admission gate are
+integrated. Eligible passed and fully resolved passed_with_warnings packages can be
+admitted. requires_review, failed, missing or corrupt evidence, unapproved sources,
+unknown Git-free releases, and conflicting versions of one quarter are blocked.
+
+Safety
+------
+- Keep Input_Quarters, Reports, Integrated_Data, and .Integration_Work together.
+- Never edit an integrated snapshot or integration_inventory.json.
+- Never delete .Integration_Work: central provenance points to its verified evidence.
+- A changed ZIP for an integrated quarter is a conflict, not an automatic replacement.
+- Back up the entire extracted integration folder after every successful run.
+
+Exit codes
+----------
+0 = successful run with no blocked packages
+1 = eligible work completed, but one or more packages were blocked
+2 = fatal setup, evidence, integrity, disk, or recovery error
+
+This release was tested with synthetic fixtures. That does not prove full 42-quarter
+runtime or memory usage. Begin with a controlled two-quarter run on the 32 GB PC.

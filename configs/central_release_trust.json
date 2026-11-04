@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "releases": {
+    "0.3.0": {
+      "package_sha256": "21325de45d4aa03ddf6207a3bff37fb4ce49bda604ffcb3b9e9563eaaf93a4c6",
+      "description": "DrivePriority AI Master Cleaning Pipeline v0.3.0"
+    }
+  }
+}

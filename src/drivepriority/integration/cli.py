@@ -12,6 +12,7 @@ MODULES = {
     "integrate": "drivepriority.integration.central_writer",
     "incremental": "drivepriority.integration.incremental",
     "validate": "drivepriority.integration.central_validate",
+    "auto": "drivepriority.integration.operator",
 }
 
 
@@ -23,6 +24,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("  RUN_CENTRAL.cmd integrate --sources-json FILE --output DIR")
         print("  RUN_CENTRAL.cmd incremental --existing DIR --new-sources-json FILE --output DIR")
         print("  RUN_CENTRAL.cmd validate --root DIR --report FILE")
+        print("  RUN_CENTRAL.cmd auto --root DIR")
         return 0
     command = arguments.pop(0)
     module = MODULES.get(command)
