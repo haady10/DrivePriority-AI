@@ -221,7 +221,31 @@ class Watcher:
         self.log(f"{module} exit {result.returncode}; log {out.name}")
         return result.returncode
 
+    @staticmethod
+    def dir_size(path: Path) -> int:
+        total = 0
+        for entry in os.scandir(path):
+            if entry.is_dir(follow_symlinks=False):
+                total += Watcher.dir_size(Path(entry.path))
+            else:
+                total += entry.stat(follow_symlinks=False).st_size
+        return total
+
+    def enough_disk(self) -> bool:
+        """A new snapshot plus its compact copy need about 2.2x the latest snapshot, plus 10 GB."""
+        snap = self.latest_snapshot()
+        size = self.dir_size(snap) if snap else 0
+        free = shutil.disk_usage(self.root).free
+        need = int(size * 2.2) + 10 * 1024**3
+        if free < need:
+            self.log(f"WAIT: not enough disk for another snapshot (free {free / 1e9:.0f} GB, need about "
+                     f"{need / 1e9:.0f} GB). A person must free space; nothing was deleted.")
+            return False
+        return True
+
     def integrate(self) -> None:
+        if not self.enough_disk():
+            return
         before = self.latest_snapshot()
         code = self.run_module("drivepriority.integration.operator", "--root", str(self.root),
                                "--release-registry", str(self.registry), log_name="auto_operator")

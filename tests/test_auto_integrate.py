@@ -135,3 +135,14 @@ def test_stops_when_target_quarter_count_is_reached(env):
                   "--stop-at-quarters", "2", "--poll-minutes", "60"])
     assert rc == 0
     assert "DONE: the latest snapshot holds 2 quarters" in (env[0] / "Reports" / "auto_integrate.log").read_text()
+
+
+def test_waits_instead_of_integrating_when_disk_is_too_small(env, monkeypatch):
+    w = watcher(env)
+    snap = env[0] / "Integrated_Data" / "Snapshot-0001"
+    snap.mkdir(parents=True)
+    (snap / "part.bin").write_bytes(b"x" * 1000)
+    monkeypatch.setattr(ai.shutil, "disk_usage", lambda p: type("U", (), {"free": 5 * 1024**3})())
+    assert w.enough_disk() is False
+    monkeypatch.setattr(ai.shutil, "disk_usage", lambda p: type("U", (), {"free": 50 * 1024**3})())
+    assert w.enough_disk() is True
