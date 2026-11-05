@@ -112,3 +112,16 @@ def test_dry_run_does_not_persist_state_so_a_real_run_still_handles_the_file(env
     assert not dry.state_path.exists()
     real = watcher(env)
     assert real.handle(zip_) == "ready_copied_to_input"
+
+
+def test_does_not_start_a_second_operator_while_one_is_running(env, monkeypatch):
+    w = watcher(env)
+    make_zip(env[1] / "2024Q4.zip", "2024Q4")
+    calls = []
+    monkeypatch.setattr(ai.Watcher, "operator_running", staticmethod(lambda: True))
+    monkeypatch.setattr(ai.Watcher, "integrate", lambda self: calls.append(1))
+    w.cycle()
+    assert calls == []
+    monkeypatch.setattr(ai.Watcher, "operator_running", staticmethod(lambda: False))
+    w.cycle()
+    assert calls == [1]

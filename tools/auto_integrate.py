@@ -194,6 +194,23 @@ class Watcher:
             raise RuntimeError(f"Copy hash mismatch for {path.name}")
 
     # ---------- operator and compaction ----------
+    @staticmethod
+    def operator_running() -> bool:
+        """True if any other integration operator process is running on this machine."""
+        try:
+            if os.name == "nt":
+                cmd = ["powershell", "-NoProfile", "-Command",
+                       "(Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | "
+                       "Where-Object { $_.CommandLine -like '*drivepriority.integration.operator*' } | "
+                       "Measure-Object).Count"]
+                out = subprocess.run(cmd, capture_output=True, text=True, timeout=120).stdout.strip()
+                return int(out or "0") > 0
+            out = subprocess.run(["pgrep", "-f", "drivepriority.integration.operator"],
+                                 capture_output=True, text=True, timeout=30).stdout.strip()
+            return bool(out)
+        except Exception:
+            return True  # cannot tell: do not start a second run
+
     def run_module(self, module: str, *args: str, log_name: str) -> int:
         env = dict(os.environ, PYTHONPATH=str(self.root / "src"), PYTHONDONTWRITEBYTECODE="1",
                    DRIVEPRIORITY_NO_PAUSE="1")
@@ -237,6 +254,9 @@ class Watcher:
         self.save()
         pending = any(r.get("result") == "ready_copied_to_input" and not r.get("integrated")
                       for r in self.state["handled"].values())
+        if pending and not self.dry_run and self.state["operator_errors"] < 2 and self.operator_running():
+            self.log("WAIT: an integration operator is already running; will check again next cycle")
+            pending = False
         if pending and not self.dry_run and self.state["operator_errors"] < 2:
             self.integrate()
             if self.state["operator_errors"] == 0:
