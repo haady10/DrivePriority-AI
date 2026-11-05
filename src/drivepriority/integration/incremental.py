@@ -58,6 +58,10 @@ def _previous_sources(snapshot: Path) -> dict[str, dict[str, Any]]:
             "root": str(source_manifest.parent),
             "archive_sha256": evidence["archive_sha256"],
         }
+        if evidence.get("revalidation_report"):
+            # A quarter admitted through a bound revalidation must keep it when the snapshot is
+            # rebuilt, otherwise the rebuild re-checks it without that evidence and blocks it.
+            entry["revalidation_root"] = evidence["revalidation_report"]
         if evidence.get("pipeline_commit"):
             entry["pipeline_commit"] = evidence["pipeline_commit"]
         if evidence.get("runtime_source_sha256"):

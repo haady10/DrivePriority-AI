@@ -90,3 +90,26 @@ def test_corrupt_incremental_checkpoint_is_rejected(tmp_path, monkeypatch):
 
     with pytest.raises(IncrementalError, match="inconsistent or corrupt"):
         incremental_update(existing, new_sources, output, resume=True)
+
+
+def test_rebuild_keeps_revalidation_evidence_of_previously_admitted_quarters(tmp_path, monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    sources = fixtures(tmp_path, pa, pq)
+    calls = []
+
+    def _recording_admit(root, **kwargs):
+        calls.append((kwargs.get("expected_quarter"), kwargs.get("revalidation_root")))
+        return {"decision": "ADMIT", "checks": {"parquet_rows": 1}}
+
+    monkeypatch.setattr(cw, "check_quarter", _recording_admit)
+    existing = tmp_path / "existing"
+    first = dict(sources["2016Q1"])
+    first["revalidation_root"] = str(tmp_path / "revalidation-2016Q1")
+    cw.integrate_quarters({"2016Q1": first}, existing, batch_size=1)
+    calls.clear()
+
+    incremental_update(existing, {"2016Q2": sources["2016Q2"]}, tmp_path / "updated", batch_size=1)
+
+    assert ("2016Q1", str(tmp_path / "revalidation-2016Q1")) in calls
+    assert ("2016Q2", None) in calls

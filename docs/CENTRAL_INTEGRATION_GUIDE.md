@@ -1,4 +1,9 @@
-# DrivePriority AI central integration 1.1.2
+# DrivePriority AI central integration 1.1.3
+
+Version 1.1.3 fixes incremental rebuilds: a quarter that was admitted through a bound revalidation now keeps
+its revalidation evidence when later quarters are added. Before, the rebuild re-checked it without that
+evidence and blocked it. If an earlier run left an `.Snapshot-NNNN.incremental-checkpoint` folder behind,
+delete that folder (it only holds a planning state file) before running again.
 
 Version 1.1.2 adds a recorded coordinator policy (`configs/central_policy.json`). When it is enabled, a
 passed or passed_with_warnings revalidation whose research-use approval is bound to the exact archive SHA-256
