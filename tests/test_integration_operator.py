@@ -25,7 +25,7 @@ def _inventory(path: Path) -> dict[str, object]:
     return {"path": path.name, "bytes": path.stat().st_size, "sha256": _hash(path)}
 
 
-def make_evidence_zip(root: Path, quarter: str = "2016Q1", *, status: str = "passed") -> Path:
+def make_evidence_zip(root: Path, quarter: str = "2016Q1", *, status: str = "passed", with_approval: bool = True) -> Path:
     package = root / "payload"
     clean = package / "arbitrary" / "cleaned"
     analysis = package / "different" / "analysis"
@@ -56,13 +56,17 @@ def make_evidence_zip(root: Path, quarter: str = "2016Q1", *, status: str = "pas
                 "status": status,
                 "source_manifest_sha256": source_sha,
                 "analysis_manifest_sha256": _hash(analysis_manifest),
-                "source": {
-                    "approval_evidence": {
-                        "archive_sha256": HEX,
-                        "research_use_source_approved": True,
-                        "evidence_level": "level2_official_download_supported",
+                "source": (
+                    {
+                        "approval_evidence": {
+                            "archive_sha256": HEX,
+                            "research_use_source_approved": True,
+                            "evidence_level": "level2_official_download_supported",
+                        }
                     }
-                },
+                    if with_approval
+                    else {}
+                ),
             }
         ),
         encoding="utf-8",
@@ -84,6 +88,33 @@ def test_package_inspection_supports_nested_layout_and_binds_evidence(tmp_path: 
     assert result["validation_status"] == "passed"
     assert result["trust"]["pipeline_commit"] == COMMIT
     assert result["zip_members"] == 5
+
+
+def _ledger(quarter: str, sha: str) -> dict[str, object]:
+    return {"central_research_use_approvals": {quarter: {
+        "archive_sha256": sha, "evidence_level": "level2_official_download_supported",
+        "research_use_source_approved": True, "approved_by": "Coordinator", "approved_on": "2026-11-05"}}}
+
+
+def test_package_without_in_package_approval_is_rejected_by_default(tmp_path: Path) -> None:
+    package = make_evidence_zip(tmp_path, with_approval=False)
+    with pytest.raises(operator.OperatorError, match="research-use source approval"):
+        operator.inspect_package(package, tmp_path / "work")
+
+
+def test_central_ledger_approval_accepts_package_for_exact_quarter_and_hash(tmp_path: Path, monkeypatch) -> None:
+    package = make_evidence_zip(tmp_path, with_approval=False)
+    monkeypatch.setattr(operator, "_load_policy", lambda _path: _ledger("2016Q1", HEX))
+    result = operator.inspect_package(package, tmp_path / "work")
+    assert result["quarter"] == "2016Q1"
+
+
+@pytest.mark.parametrize("quarter,sha", [("2016Q2", HEX), ("2016Q1", "c" * 64)])
+def test_central_ledger_does_not_accept_other_quarter_or_hash(tmp_path: Path, monkeypatch, quarter: str, sha: str) -> None:
+    package = make_evidence_zip(tmp_path, with_approval=False)
+    monkeypatch.setattr(operator, "_load_policy", lambda _path: _ledger(quarter, sha))
+    with pytest.raises(operator.OperatorError, match="research-use source approval"):
+        operator.inspect_package(package, tmp_path / "work")
 
 
 def test_windows_70_character_root_avoids_legacy_max_path_and_extracts(tmp_path: Path) -> None:

@@ -14,13 +14,13 @@ import uuid
 import zipfile
 from typing import Any, Mapping, Sequence
 
-from drivepriority.integration.admission import check_quarter
+from drivepriority.integration.admission import _load_policy, central_ledger_approval, check_quarter
 from drivepriority.integration.central_validate import validate_snapshot
 from drivepriority.integration.central_writer import CentralWriteError, integrate_quarters
 from drivepriority.integration.incremental import IncrementalError, incremental_update
 
 
-OPERATOR_VERSION = "1.1.3"
+OPERATOR_VERSION = "1.1.4"
 STATE_VERSION = "1.1.0"
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 GIT_COMMIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -245,15 +245,22 @@ def inspect_package(zip_path: Path, work: Path, *, release_registry: Path | None
     source_sha = source.get("sha256") if isinstance(source, dict) else None
     revalidation_source = revalidation.get("source")
     approval = revalidation_source.get("approval_evidence") if isinstance(revalidation_source, dict) else None
-    if (
-        not isinstance(source_sha, str)
-        or not HEX64.fullmatch(source_sha.lower())
-        or not isinstance(approval, dict)
-        or str(approval.get("archive_sha256", "")).lower() != source_sha.lower()
-        or approval.get("research_use_source_approved") is not True
-        or approval.get("evidence_level") not in {"level2_official_download_supported", "level3_publisher_bytes_verified"}
-    ):
-        raise OperatorError("Package lacks exact-hash research-use source approval")
+    in_package_approval = (
+        isinstance(source_sha, str)
+        and bool(HEX64.fullmatch(source_sha.lower()))
+        and isinstance(approval, dict)
+        and str(approval.get("archive_sha256", "")).lower() == source_sha.lower()
+        and approval.get("research_use_source_approved") is True
+        and approval.get("evidence_level") in {"level2_official_download_supported", "level3_publisher_bytes_verified"}
+    )
+    if not in_package_approval:
+        ledger_ok = (
+            isinstance(source_sha, str)
+            and bool(HEX64.fullmatch(source_sha.lower()))
+            and central_ledger_approval(_load_policy(None), quarter, source_sha) is not None
+        )
+        if not ledger_ok:
+            raise OperatorError("Package lacks exact-hash research-use source approval")
     software = manifest.get("software") if isinstance(manifest.get("software"), dict) else {}
     git = software.get("git") if isinstance(software.get("git"), dict) else {}
     commit = git.get("commit")

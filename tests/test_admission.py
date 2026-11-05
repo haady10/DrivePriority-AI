@@ -243,6 +243,65 @@ class AdmissionTests(unittest.TestCase):
         self.assertNotEqual(result['decision'], 'ADMIT')
         self.assertIn('exceptions.parquet not listed in manifest', result['reasons'])
 
+    # ---- central ledger: coordinator approval held centrally, bound to the archive hash ----
+    def _revalidation_without_in_package_approval(self):
+        revalidation = self._revalidated_without_manifest_authenticity()
+        report = json.loads((revalidation / 'revalidation_report.json').read_text())
+        report.pop('source')
+        (revalidation / 'revalidation_report.json').write_text(json.dumps(report))
+        return revalidation
+
+    def _ledger_policy(self, sha=HEX, quarter='2016Q1', level='level2_official_download_supported',
+                       approved=True, by='Coordinator', on='2026-11-05'):
+        path = self.root / 'ledger_policy.json'
+        path.write_text(json.dumps({'central_research_use_approvals': {quarter: {
+            'archive_sha256': sha, 'evidence_level': level, 'research_use_source_approved': approved,
+            'approved_by': by, 'approved_on': on}}}))
+        return path
+
+    def test_central_ledger_accepts_exact_quarter_and_hash_and_records_basis(self):
+        revalidation = self._revalidation_without_in_package_approval()
+        result = self.decide(revalidation_root=revalidation, policy_path=self._ledger_policy())
+        self.assertEqual(result['decision'], 'ADMIT')
+        self.assertEqual(result['checks']['authenticity_basis'],
+                         'central_ledger_approval_level2_official_download_supported')
+        self.assertEqual(result['checks']['authenticity_policy_decision']['approved_by'], 'Coordinator')
+
+    def test_central_ledger_rejects_other_archive_hash(self):
+        revalidation = self._revalidation_without_in_package_approval()
+        result = self.decide(revalidation_root=revalidation, policy_path=self._ledger_policy(sha='c' * 64))
+        self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_central_ledger_rejects_other_quarter(self):
+        revalidation = self._revalidation_without_in_package_approval()
+        result = self.decide(revalidation_root=revalidation, policy_path=self._ledger_policy(quarter='2016Q2'))
+        self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_central_ledger_rejects_weak_unapproved_or_unattributed_entries(self):
+        for kwargs in ({'level': 'unverified'}, {'approved': False}, {'by': ''}, {'on': ''}):
+            with self.subTest(**kwargs):
+                self.setUp()
+                revalidation = self._revalidation_without_in_package_approval()
+                result = self.decide(revalidation_root=revalidation, policy_path=self._ledger_policy(**kwargs))
+                self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_central_ledger_does_not_apply_without_revalidation(self):
+        self.manifest['source'] = {'sha256': HEX}
+        self.save()
+        result = self.decide(policy_path=self._ledger_policy())
+        self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_central_ledger_does_not_hide_missing_exceptions_entry(self):
+        revalidation = self._revalidation_without_in_package_approval()
+        self.manifest['outputs'] = [o for o in self.manifest['outputs'] if o['path'] != 'exceptions.parquet']
+        (self.root / 'source_manifest.json').write_text(json.dumps(self.manifest), encoding='utf8')
+        report = json.loads((revalidation / 'revalidation_report.json').read_text())
+        report['source_manifest_sha256'] = hashlib.sha256((self.root / 'source_manifest.json').read_bytes()).hexdigest()
+        (revalidation / 'revalidation_report.json').write_text(json.dumps(report))
+        result = self.decide(revalidation_root=revalidation, policy_path=self._ledger_policy())
+        self.assertNotEqual(result['decision'], 'ADMIT')
+        self.assertIn('exceptions.parquet not listed in manifest', result['reasons'])
+
     def test_modified_output_hash(self):
         self.parquet.write_bytes(b'changed data')
         self.assertEqual(self.decide()['decision'], 'REJECT')

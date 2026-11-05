@@ -7,5 +7,32 @@
     "rule": "A passed or passed_with_warnings revalidation whose research-use approval is bound to the exact archive SHA-256 at evidence level level2_official_download_supported or level3_publisher_bytes_verified satisfies the source-authenticity requirement.",
     "disclosure": "This is documented manual-review approval of the official download. It is NOT publisher-checksum verification. Reports and the manuscript must say so.",
     "to_restore_strict_behaviour": "Set revalidation_research_use_approval_satisfies_authenticity to false."
-  }
+  },
+  "central_research_use_approvals": {
+    "2016Q3": {
+      "archive_sha256": "70d0531317b3a8215adacefc78250cc50a87fe867f5293dbc14f75f0a1927607",
+      "evidence_level": "level2_official_download_supported",
+      "research_use_source_approved": true,
+      "approved_by": "Haady Abdul Jabar V.A (project coordinator), as stated in the project session",
+      "approved_on": "2026-11-05",
+      "statement": "Manual approval of the official Backblaze download for research use. NOT a publisher-checksum verification."
+    },
+    "2018Q3": {
+      "archive_sha256": "7ef11ee1a22c97780222d4c7e6e4031ba6d333f0071ccc9784989428f2d6bcec",
+      "evidence_level": "level2_official_download_supported",
+      "research_use_source_approved": true,
+      "approved_by": "Haady Abdul Jabar V.A (project coordinator), as stated in the project session",
+      "approved_on": "2026-11-05",
+      "statement": "Manual approval of the official Backblaze download for research use. NOT a publisher-checksum verification."
+    },
+    "2019Q3": {
+      "archive_sha256": "53de1c8d32da5dfb0f6de3317b01af4b72630ff618d10a3781c322cc433ebd1d",
+      "evidence_level": "level2_official_download_supported",
+      "research_use_source_approved": true,
+      "approved_by": "Haady Abdul Jabar V.A (project coordinator), as stated in the project session",
+      "approved_on": "2026-11-05",
+      "statement": "Manual approval of the official Backblaze download for research use. NOT a publisher-checksum verification."
+    }
+  },
+  "central_research_use_approvals_note": "Each entry applies only to the quarter named and only to the exact archive SHA-256 listed. It replaces the in-package approval record for that quarter. Remove an entry to restore strict behaviour for it. Reports and the manuscript must disclose these as manual approvals, not publisher-checksum verification."
 }

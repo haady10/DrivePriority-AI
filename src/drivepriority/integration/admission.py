@@ -96,6 +96,31 @@ def _load_policy(path: str | Path | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def central_ledger_approval(policy: Any, quarter: Any, source_sha: Any) -> dict[str, Any] | None:
+    """Return the coordinator's central approval for a quarter, or None.
+
+    The entry must name the quarter, carry an allowed evidence level, and be bound to the
+    exact source-archive SHA-256 recorded in the quarter's source manifest. A different
+    archive hash for the same quarter does not match.
+    """
+    if not isinstance(policy, dict) or not isinstance(quarter, str) or not isinstance(source_sha, str):
+        return None
+    ledger = policy.get("central_research_use_approvals")
+    entry = ledger.get(quarter) if isinstance(ledger, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    if (
+        str(entry.get("archive_sha256", "")).lower() == source_sha.lower()
+        and entry.get("research_use_source_approved") is True
+        and entry.get("evidence_level") in REVALIDATION_AUTHENTICITY_LEVELS
+        and isinstance(entry.get("approved_by"), str) and entry["approved_by"].strip()
+        and isinstance(entry.get("approved_on"), str) and entry["approved_on"].strip()
+    ):
+        return entry
+    return None
+
+
+
 
 def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
                   contract_path: str | Path | None = None,
@@ -271,7 +296,16 @@ def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
             checks["authenticity_basis"] = f"policy_accepted_revalidation_{revalidation_authenticity_level}"
             checks["authenticity_policy_decision"] = policy.get("decision", {})
         else:
-            reasons.append("official source authenticity unverified")
+            ledger_entry = central_ledger_approval(
+                policy, quarter, source.get("sha256") if isinstance(source, dict) else None
+            )
+            if ledger_entry is not None and revalidation_approved:
+                # Recorded coordinator approval held centrally, bound to the exact archive hash.
+                # Still NOT publisher-checksum verification; recorded as such.
+                checks["authenticity_basis"] = f"central_ledger_approval_{ledger_entry['evidence_level']}"
+                checks["authenticity_policy_decision"] = ledger_entry
+            else:
+                reasons.append("official source authenticity unverified")
     checks["source_hash_recorded"] = source.get("sha256") if isinstance(source, dict) else None
 
     outputs = manifest.get("outputs")

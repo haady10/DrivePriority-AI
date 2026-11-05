@@ -1,4 +1,15 @@
-# DrivePriority AI central integration 1.1.3
+# DrivePriority AI central integration 1.1.4
+
+Version 1.1.4 adds a central research-use approval list (`central_research_use_approvals` in
+`configs/central_policy.json`). An entry names one quarter, the exact source-archive SHA-256, the evidence level
+(`level2_official_download_supported` or `level3_publisher_bytes_verified`), who approved it and when. When a
+package has no approval record inside its revalidation report, an entry that matches its quarter and archive hash
+is accepted instead, and the admission records `central_ledger_approval_<level>` as the authenticity basis. It
+replaces only the missing in-package approval record. It does not relax any other check: the five evidence
+files, the exceptions.parquet manifest entry, the revalidation status, the pinned pipeline release and the
+one-manifest rule all still apply. This is documented manual approval of the official download, not
+publisher-checksum verification. Remove an entry to restore strict behaviour for that quarter. Reports and the
+manuscript must disclose these quarters.
 
 Version 1.1.3 fixes incremental rebuilds: a quarter that was admitted through a bound revalidation now keeps
 its revalidation evidence when later quarters are added. Before, the rebuild re-checked it without that
