@@ -149,7 +149,8 @@ def integrate_quarters(sources: Mapping[str, Mapping[str, Any]], output_dir: str
                          'pipeline_commit': item['pipeline_commit'],
                          'runtime_source_sha256': item['runtime_source_sha256'],
                          'release_sha256': item['release_sha256'],
-                         'revalidation_report': item['revalidation_root']}
+                         'revalidation_report': item['revalidation_root'],
+                         'authenticity_basis': decision['checks'].get('authenticity_basis')}
 
     plan, union_schema = arrow_plan(schemas)
     staging = parent / ('.' + output.name + '.staging-' + uuid.uuid4().hex)

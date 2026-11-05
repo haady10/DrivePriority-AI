@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "revalidation_research_use_approval_satisfies_authenticity": true,
+  "decision": {
+    "approved_by": "Haady Abdul Jabar V.A (project coordinator), as stated in the project session",
+    "approved_on": "2026-11-05",
+    "rule": "A passed or passed_with_warnings revalidation whose research-use approval is bound to the exact archive SHA-256 at evidence level level2_official_download_supported or level3_publisher_bytes_verified satisfies the source-authenticity requirement.",
+    "disclosure": "This is documented manual-review approval of the official download. It is NOT publisher-checksum verification. Reports and the manuscript must say so.",
+    "to_restore_strict_behaviour": "Set revalidation_research_use_approval_satisfies_authenticity to false."
+  }
+}

@@ -62,13 +62,49 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+REVALIDATION_AUTHENTICITY_LEVELS = {
+    "level2_official_download_supported",
+    "level3_publisher_bytes_verified",
+}
+
+
+def _revalidation_authenticity_level(revalidation: Any, source: Any) -> str | None:
+    """Return the evidence level when a passed revalidation carries an exact-hash approval."""
+    if not isinstance(revalidation, dict) or not isinstance(source, dict):
+        return None
+    revalidation_source = revalidation.get("source")
+    evidence = revalidation_source.get("approval_evidence") if isinstance(revalidation_source, dict) else None
+    source_sha = source.get("sha256")
+    if (
+        isinstance(evidence, dict)
+        and evidence.get("research_use_source_approved") is True
+        and evidence.get("evidence_level") in REVALIDATION_AUTHENTICITY_LEVELS
+        and isinstance(source_sha, str)
+        and str(evidence.get("archive_sha256", "")).lower() == source_sha.lower()
+    ):
+        return str(evidence["evidence_level"])
+    return None
+
+
+def _load_policy(path: str | Path | None) -> dict[str, Any]:
+    """Load the optional central policy. Missing or invalid means the strict default."""
+    candidate = Path(path) if path else Path(__file__).resolve().parents[3] / "configs" / "central_policy.json"
+    try:
+        value = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+
 def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
                   contract_path: str | Path | None = None,
                   trusted_archive_sha256: str | None = None,
                   trusted_pipeline_commit: str | None = None,
                   trusted_runtime_source_sha256: str | None = None,
                   trusted_release_sha256: str | None = None,
-                  revalidation_root: str | Path | None = None) -> dict[str, Any]:
+                  revalidation_root: str | Path | None = None,
+                  policy_path: str | Path | None = None) -> dict[str, Any]:
     """Return ADMIT / REVIEW / REJECT, with evidence. Never writes to root.
 
     ADMIT requires caller-provided trusted source archive hash AND pinned Git commit;
@@ -110,6 +146,7 @@ def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
         return result
 
     revalidation_approved = False
+    revalidation_authenticity_level: str | None = None
     if revalidation_root is not None:
         revalidation_path = Path(revalidation_root).expanduser().resolve()
         revalidation = _load_json(
@@ -132,6 +169,9 @@ def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
                 reasons.append("revalidation retains unresolved identity ambiguity")
             else:
                 revalidation_approved = True
+                revalidation_authenticity_level = _revalidation_authenticity_level(
+                    revalidation, manifest.get("source")
+                )
                 checks["revalidation"] = {
                     "status": revalidation.get("status"),
                     "sha256": _sha256(
@@ -218,8 +258,20 @@ def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
             checks["pipeline_identity"] = "gitless_release_and_runtime_source_hash"
             checks["release_sha256"] = trusted_release_sha256.lower()
     auth = (source or {}).get("approved_inventory_evidence") if isinstance(source, dict) else None
-    if not isinstance(auth, dict) or auth.get("authenticity_verified") is not True:
-        reasons.append("official source authenticity unverified")
+    if isinstance(auth, dict) and auth.get("authenticity_verified") is True:
+        checks["authenticity_basis"] = "source_manifest_authenticity_verified"
+    else:
+        policy = _load_policy(policy_path)
+        if revalidation_authenticity_level is not None and policy.get(
+            "revalidation_research_use_approval_satisfies_authenticity"
+        ) is True:
+            # Recorded coordinator decision: an exact-hash Level 2/3 research-use approval
+            # bound into the passed revalidation counts as the authenticity basis.
+            # This is NOT publisher-checksum verification and is recorded as such.
+            checks["authenticity_basis"] = f"policy_accepted_revalidation_{revalidation_authenticity_level}"
+            checks["authenticity_policy_decision"] = policy.get("decision", {})
+        else:
+            reasons.append("official source authenticity unverified")
     checks["source_hash_recorded"] = source.get("sha256") if isinstance(source, dict) else None
 
     outputs = manifest.get("outputs")

@@ -167,6 +167,82 @@ class AdmissionTests(unittest.TestCase):
 
         self.assertEqual(result['decision'], 'ADMIT')
 
+    # ---- coordinator policy: revalidation Level 2/3 approval as authenticity basis ----
+    def _revalidated_without_manifest_authenticity(self, evidence_level='level2_official_download_supported',
+                                                   approved=True, sha=None):
+        self.manifest['source'] = {'sha256': HEX}          # cleaned with authenticity unverified
+        self.validation['status'] = 'requires_review'
+        self.validation['central_integration_admission'] = {'eligible': False, 'requires_explicit_review': True}
+        self.validation['review_reasons'] = ['serial_identity_collisions']
+        self.manifest['validation'] = self.validation
+        self.save()
+        revalidation = self.root / 'revalidation'
+        revalidation.mkdir()
+        report = {
+            'quarter': '2016Q1',
+            'source_manifest_sha256': hashlib.sha256((self.root / 'source_manifest.json').read_bytes()).hexdigest(),
+            'status': 'passed_with_warnings', 'review_reasons': [],
+            'identity': {'remaining_unresolved_serials': 0},
+            'source': {'approval_evidence': {'archive_sha256': sha or HEX, 'evidence_level': evidence_level,
+                                             'research_use_source_approved': approved}},
+        }
+        (revalidation / 'revalidation_report.json').write_text(json.dumps(report))
+        return revalidation
+
+    def _policy(self, enabled):
+        path = self.root / 'policy.json'
+        path.write_text(json.dumps({'revalidation_research_use_approval_satisfies_authenticity': enabled,
+                                    'decision': {'approved_by': 'test'}}))
+        return path
+
+    def test_policy_accepts_exact_hash_level2_revalidation_and_records_basis(self):
+        revalidation = self._revalidated_without_manifest_authenticity()
+        result = self.decide(revalidation_root=revalidation, policy_path=self._policy(True))
+        self.assertEqual(result['decision'], 'ADMIT')
+        self.assertEqual(result['checks']['authenticity_basis'],
+                         'policy_accepted_revalidation_level2_official_download_supported')
+
+    def test_without_policy_authenticity_stays_blocked(self):
+        revalidation = self._revalidated_without_manifest_authenticity()
+        result = self.decide(revalidation_root=revalidation, policy_path=self._policy(False))
+        self.assertNotEqual(result['decision'], 'ADMIT')
+        self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_missing_policy_file_is_strict(self):
+        revalidation = self._revalidated_without_manifest_authenticity()
+        result = self.decide(revalidation_root=revalidation, policy_path=self.root / 'nope.json')
+        self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_policy_rejects_approval_bound_to_another_archive(self):
+        revalidation = self._revalidated_without_manifest_authenticity(sha='c' * 64)
+        result = self.decide(revalidation_root=revalidation, policy_path=self._policy(True))
+        self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_policy_rejects_weak_evidence_level_or_unapproved(self):
+        for kwargs in ({'evidence_level': 'unverified'}, {'approved': False}):
+            with self.subTest(**kwargs):
+                self.setUp()
+                revalidation = self._revalidated_without_manifest_authenticity(**kwargs)
+                result = self.decide(revalidation_root=revalidation, policy_path=self._policy(True))
+                self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_policy_does_not_apply_without_revalidation(self):
+        self.manifest['source'] = {'sha256': HEX}
+        self.save()
+        result = self.decide(policy_path=self._policy(True))
+        self.assertIn('official source authenticity unverified', result['reasons'])
+
+    def test_policy_does_not_hide_missing_exceptions_entry(self):
+        revalidation = self._revalidated_without_manifest_authenticity()
+        self.manifest['outputs'] = [o for o in self.manifest['outputs'] if o['path'] != 'exceptions.parquet']
+        (self.root / 'source_manifest.json').write_text(json.dumps(self.manifest), encoding='utf8')
+        report = json.loads((revalidation / 'revalidation_report.json').read_text())
+        report['source_manifest_sha256'] = hashlib.sha256((self.root / 'source_manifest.json').read_bytes()).hexdigest()
+        (revalidation / 'revalidation_report.json').write_text(json.dumps(report))
+        result = self.decide(revalidation_root=revalidation, policy_path=self._policy(True))
+        self.assertNotEqual(result['decision'], 'ADMIT')
+        self.assertIn('exceptions.parquet not listed in manifest', result['reasons'])
+
     def test_modified_output_hash(self):
         self.parquet.write_bytes(b'changed data')
         self.assertEqual(self.decide()['decision'], 'REJECT')

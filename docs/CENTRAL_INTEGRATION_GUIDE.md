@@ -1,4 +1,12 @@
-# DrivePriority AI central integration 1.1.1
+# DrivePriority AI central integration 1.1.2
+
+Version 1.1.2 adds a recorded coordinator policy (`configs/central_policy.json`). When it is enabled, a
+passed or passed_with_warnings revalidation whose research-use approval is bound to the exact archive SHA-256
+at evidence level `level2_official_download_supported` or `level3_publisher_bytes_verified` satisfies the
+source-authenticity requirement even if the cleaning manifest was written with authenticity unverified. The
+basis is stored per quarter as `authenticity_basis`. This is documented manual-review approval, not publisher
+checksum verification, and reports must say so. Set the policy flag to false to restore the strict rule.
+Structural checks (evidence file counts, `exceptions.parquet` in the manifest, hashes, schema) are unchanged.
 
 Version 1.1.1 shortens hash-addressed extraction and staging paths for Windows
 systems where `LongPathsEnabled=0`. The complete package SHA-256 remains in the
