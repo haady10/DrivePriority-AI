@@ -5,6 +5,15 @@ Standalone (standard library only). Never extracts or changes a ZIP.
 Usage:
   python inspect_packages.py <folder with quarter ZIPs> [--csv report.csv]
 
+Checks per ZIP (the same rules the central gate applies):
+  * exactly one of each of the five evidence files
+  * final revalidation status is passed or passed_with_warnings
+  * research-use approval in the revalidation (Level 2/3, bound to the archive SHA-256)
+    - the three quarters approved centrally (2016Q3, 2018Q3, 2019Q3) only warn about this
+  * exceptions.parquet rule: required and listed only when processing.exception_rows > 0;
+    with 0 exception rows the file must be absent and unlisted
+  * authenticity_verified must not be true unless a publisher checksum really was verified (warning)
+
 For every ZIP it prints: quarter, archive SHA-256 of the raw Backblaze file the
 quarter was cleaned from, how many of each required evidence file the package
 contains (the gate needs exactly 1 of each), the pipeline version, the final
@@ -22,6 +31,12 @@ from pathlib import Path
 REQUIRED = ("source_manifest.json", "analysis_manifest.json", "anomaly_report.json",
             "revalidation_manifest.json", "revalidation_report.json")
 OK_LEVELS = {"level2_official_download_supported", "level3_publisher_bytes_verified"}
+OK_STATUS = {"passed", "passed_with_warnings"}
+CENTRALLY_APPROVED = {  # quarter -> archive SHA-256 (configs/central_policy.json, 1.1.4+)
+    "2016Q3": "70d0531317b3a8215adacefc78250cc50a87fe867f5293dbc14f75f0a1927607",
+    "2018Q3": "7ef11ee1a22c97780222d4c7e6e4031ba6d333f0071ccc9784989428f2d6bcec",
+    "2019Q3": "53de1c8d32da5dfb0f6de3317b01af4b72630ff618d10a3781c322cc433ebd1d",
+}
 
 
 def _members(z: zipfile.ZipFile, name: str) -> list[str]:
@@ -51,7 +66,8 @@ def _statuses(report: dict) -> str:
 def inspect(path: Path) -> dict:
     row = {"zip": path.name, "mb": round(path.stat().st_size / 1e6, 1), "quarter": "-",
            "archive_sha256": "-", "pipeline_version": "-", "revalidation": "-",
-           "approval_level": "-", "research_use_approved": "-", "problems": []}
+           "approval_level": "-", "research_use_approved": "-", "exception_rows": "-",
+           "problems": [], "warnings": []}
     try:
         z = zipfile.ZipFile(path)
     except Exception as exc:
@@ -77,10 +93,36 @@ def inspect(path: Path) -> dict:
         row["approval_level"] = ev.get("evidence_level", "none")
         row["research_use_approved"] = ev.get("research_use_source_approved", "none")
         if rv:
+            central = CENTRALLY_APPROVED.get(str(row["quarter"]), "").lower() == str(source.get("sha256", "")).lower() \
+                and str(source.get("sha256", "")) != ""
             if ev.get("evidence_level") not in OK_LEVELS or ev.get("research_use_source_approved") is not True:
-                row["problems"].append("no Level 2/3 research-use approval in revalidation")
+                if central:
+                    row["warnings"].append("no approval record in the ZIP; covered by the central approval list")
+                else:
+                    row["problems"].append("no Level 2/3 research-use approval in revalidation")
             elif str(ev.get("archive_sha256", "")).lower() != str(source.get("sha256", "")).lower():
                 row["problems"].append("approval is bound to a different archive SHA-256")
+            status = report.get("status")
+            if status not in OK_STATUS:
+                row["problems"].append(f"final revalidation status is {status!r} (need passed or passed_with_warnings)")
+            if report.get("review_reasons"):
+                row["problems"].append("revalidation still lists review_reasons")
+        if ev.get("authenticity_verified") is True or (isinstance(manifest.get("source"), dict) and
+                (manifest["source"].get("approved_inventory_evidence") or {}).get("authenticity_verified") is True):
+            row["warnings"].append("authenticity_verified is true: only valid if a publisher checksum was really verified")
+        processing = manifest.get("processing") if isinstance(manifest.get("processing"), dict) else {}
+        exc_rows = processing.get("exception_rows")
+        row["exception_rows"] = exc_rows if exc_rows is not None else "-"
+        listed = any(isinstance(o, dict) and o.get("path") == "exceptions.parquet"
+                     for o in (manifest.get("outputs") or []))
+        present = any(n.rsplit("/", 1)[-1] == "exceptions.parquet" for n in z.namelist())
+        if isinstance(exc_rows, bool) or not isinstance(exc_rows, int) or exc_rows < 0:
+            if sm:
+                row["problems"].append("processing.exception_rows missing or invalid")
+        elif exc_rows > 0 and not (listed and present):
+            row["problems"].append(f"exception_rows={exc_rows} but exceptions.parquet listed={listed}, in ZIP={present}")
+        elif exc_rows == 0 and (listed or present):
+            row["problems"].append(f"exception_rows=0 but exceptions.parquet listed={listed}, in ZIP={present} (must be absent)")
     return row
 
 
@@ -102,16 +144,19 @@ def main() -> int:
         print(f"  pipeline version  : {r['pipeline_version']}")
         print(f"  revalidation      : {r['revalidation']}")
         print(f"  approval level    : {r['approval_level']}   research-use approved: {r['research_use_approved']}")
+        print(f"  exception rows    : {r['exception_rows']}")
+        for w in r["warnings"]:
+            print(f"  NOTE: {w}")
         print("  READY" if not r["problems"] else "  PROBLEMS: " + " | ".join(r["problems"]))
     if a.csv:
         with open(a.csv, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["zip", "mb", "quarter", "archive_sha256", "pipeline_version", "revalidation",
-                        "approval_level", "research_use_approved", "problems"])
+                        "approval_level", "research_use_approved", "exception_rows", "problems", "notes"])
             for r in rows:
                 w.writerow([r["zip"], r["mb"], r["quarter"], r["archive_sha256"], r["pipeline_version"],
                             r["revalidation"], r["approval_level"], r["research_use_approved"],
-                            " | ".join(r["problems"])])
+                            r["exception_rows"], " | ".join(r["problems"]), " | ".join(r["warnings"])])
         print(f"\nCSV written: {a.csv}")
     ready = sum(1 for r in rows if not r["problems"])
     print(f"\n{ready} of {len(rows)} packages have no problems.")
