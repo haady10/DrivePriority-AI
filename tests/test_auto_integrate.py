@@ -125,3 +125,13 @@ def test_does_not_start_a_second_operator_while_one_is_running(env, monkeypatch)
     monkeypatch.setattr(ai.Watcher, "operator_running", staticmethod(lambda: False))
     w.cycle()
     assert calls == [1]
+
+
+def test_stops_when_target_quarter_count_is_reached(env):
+    snap = env[0] / "Integrated_Data" / "Snapshot-0009"
+    snap.mkdir(parents=True)
+    (snap / "central_manifest.json").write_text(json.dumps({"input_quarters": {"2016Q1": {}, "2016Q2": {}}}), encoding="utf-8")
+    rc = ai.main(["--root", str(env[0]), "--onedrive", str(env[1]), "--registry", str(env[2]),
+                  "--stop-at-quarters", "2", "--poll-minutes", "60"])
+    assert rc == 0
+    assert "DONE: the latest snapshot holds 2 quarters" in (env[0] / "Reports" / "auto_integrate.log").read_text()

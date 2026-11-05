@@ -283,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--poll-minutes", type=float, default=60.0)
     p.add_argument("--settle-minutes", type=float, default=5.0)
     p.add_argument("--max-hours", type=float, default=20.0)
+    p.add_argument("--stop-at-quarters", type=int, default=0,
+                   help="Stop as soon as the latest snapshot holds this many quarters (0 = never)")
     a = p.parse_args(argv)
     keep_awake()
     watcher = Watcher(a.root, a.onedrive, a.registry, auto_ledger=a.auto_ledger, dry_run=a.dry_run,
@@ -298,6 +300,10 @@ def main(argv: list[str] | None = None) -> int:
         watcher.log(f"START watcher (auto_ledger={a.auto_ledger}, dry_run={a.dry_run}, poll {a.poll_minutes} min)")
         while True:
             watcher.cycle()
+            if a.stop_at_quarters and len(watcher.integrated_quarters()) >= a.stop_at_quarters:
+                watcher.log(f"DONE: the latest snapshot holds {len(watcher.integrated_quarters())} quarters "
+                            f"(target {a.stop_at_quarters}).")
+                break
             if a.once or watcher.state["operator_errors"] >= 2 or time.time() > deadline:
                 break
             time.sleep(a.poll_minutes * 60)
