@@ -1,6 +1,6 @@
 """Unattended watcher: finds new quarter ZIPs in the OneDrive team folder, checks them, integrates them.
 
-What it does, every --poll-minutes:
+What it does, every --poll-minutes (default 60):
   1. Finds ZIPs under --onedrive that are not yet handled (SHA-256 cache, skips files still syncing).
   2. Checks each one with tools/inspect_packages.py (the same rules as the central gate, plus the
      pipeline-version / runtime-hash check against --registry).
@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--auto-ledger", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--once", action="store_true")
-    p.add_argument("--poll-minutes", type=float, default=10.0)
+    p.add_argument("--poll-minutes", type=float, default=60.0)
     p.add_argument("--settle-minutes", type=float, default=5.0)
     p.add_argument("--max-hours", type=float, default=20.0)
     a = p.parse_args(argv)
