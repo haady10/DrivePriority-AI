@@ -1,4 +1,5 @@
 """Step 2 fail-closed tests. Uses synthetic reports/files; no real archives or data are touched."""
+import copy
 import hashlib
 import json
 import tempfile
@@ -43,7 +44,7 @@ class AdmissionTests(unittest.TestCase):
         self.t = tempfile.TemporaryDirectory()
         self.addCleanup(self.t.cleanup)
         self.root = Path(self.t.name)
-        self.fields = CONTRACT['canonical_fields_2016Q1_reference']
+        self.fields = copy.deepcopy(CONTRACT['canonical_fields_2016Q1_reference'])
         self.fp = hashlib.sha256(b'synthetic-schema').hexdigest()
         FakeParquetFile.schema = FakeSchema([FakeField(f) for f in self.fields])
         self.schema = {'canonical_fields': self.fields, 'canonical_schema_fingerprint': self.fp}
@@ -301,6 +302,47 @@ class AdmissionTests(unittest.TestCase):
         result = self.decide(revalidation_root=revalidation, policy_path=self._ledger_policy())
         self.assertNotEqual(result['decision'], 'ADMIT')
         self.assertIn('exceptions.parquet not listed in manifest', result['reasons'])
+
+    # ---- exceptions.parquet rule mirrors the cleaning pipeline: required iff exception_rows > 0 ----
+    def _unlist_exceptions(self, exception_rows, delete_file=True):
+        self.manifest['processing']['exception_rows'] = exception_rows
+        self.manifest['outputs'] = [o for o in self.manifest['outputs'] if o['path'] != 'exceptions.parquet']
+        if delete_file:
+            (self.root / 'exceptions.parquet').unlink()
+        (self.root / 'source_manifest.json').write_text(json.dumps(self.manifest), encoding='utf8')
+
+    def test_zero_exception_rows_without_file_is_valid(self):
+        self.save()
+        self._unlist_exceptions(0)
+        result = self.decide()
+        self.assertEqual(result['decision'], 'ADMIT')
+        self.assertEqual(result['checks']['exceptions_rule'], 'zero_exception_rows_file_absent')
+
+    def test_zero_exception_rows_with_listed_file_is_invalid(self):
+        self.manifest['processing']['exception_rows'] = 0
+        self.save()
+        result = self.decide()
+        self.assertNotEqual(result['decision'], 'ADMIT')
+        self.assertIn('manifest inventories exceptions.parquet with zero exception rows', result['reasons'])
+
+    def test_positive_exception_rows_require_listed_file(self):
+        self.save()
+        self._unlist_exceptions(5, delete_file=False)
+        result = self.decide()
+        self.assertNotEqual(result['decision'], 'ADMIT')
+        self.assertIn('exceptions.parquet not listed in manifest', result['reasons'])
+
+    def test_missing_or_invalid_exception_rows_keep_strict_rule(self):
+        for value in (None, True, -1, '0', 1.5):
+            with self.subTest(value=value):
+                self.setUp()
+                self.save()
+                self._unlist_exceptions(value, delete_file=False)
+                if value is None:
+                    self.manifest['processing'].pop('exception_rows')
+                    (self.root / 'source_manifest.json').write_text(json.dumps(self.manifest), encoding='utf8')
+                result = self.decide()
+                self.assertIn('exceptions.parquet not listed in manifest', result['reasons'])
 
     def test_modified_output_hash(self):
         self.parquet.write_bytes(b'changed data')

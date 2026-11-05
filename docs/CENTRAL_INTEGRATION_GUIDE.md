@@ -1,4 +1,10 @@
-# DrivePriority AI central integration 1.1.4
+# DrivePriority AI central integration 1.1.5
+
+Version 1.1.5 makes the exceptions.parquet rule match the cleaning pipeline's own rule. The file is required
+and must be listed in the manifest only when `processing.exception_rows` is greater than 0. With 0 exception
+rows the file must be absent and unlisted, and a package that lists it anyway is rejected. A missing or
+non-integer `exception_rows` keeps the old strict behaviour (the file must be listed). All other checks are
+unchanged. The coordinator approved this rule change (Option A).
 
 Version 1.1.4 adds a central research-use approval list (`central_research_use_approvals` in
 `configs/central_policy.json`). An entry names one quarter, the exact source-archive SHA-256, the evidence level

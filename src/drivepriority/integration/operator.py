@@ -20,7 +20,7 @@ from drivepriority.integration.central_writer import CentralWriteError, integrat
 from drivepriority.integration.incremental import IncrementalError, incremental_update
 
 
-OPERATOR_VERSION = "1.1.4"
+OPERATOR_VERSION = "1.1.5"
 STATE_VERSION = "1.1.0"
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 GIT_COMMIT = re.compile(r"[0-9a-f]{40}\Z")

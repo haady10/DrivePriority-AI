@@ -370,8 +370,21 @@ def check_quarter(root: str | Path, *, expected_quarter: str | None = None,
     for report in REQUIRED_REPORTS:
         if report not in seen:
             reasons.append(f"missing hashed report entry: {report}")
-    if "exceptions.parquet" not in seen:
-        reasons.append("exceptions.parquet not listed in manifest")
+    # Same rule the cleaning pipeline applies to itself (ingest.py): exceptions.parquet is required
+    # and listed only when processing.exception_rows > 0. With zero exception rows the file must be
+    # absent and unlisted. A missing or non-integer exception_rows keeps the strict behaviour.
+    _processing = manifest.get("processing")
+    _exception_rows = _processing.get("exception_rows") if isinstance(_processing, dict) else None
+    if isinstance(_exception_rows, bool) or not isinstance(_exception_rows, int) or _exception_rows < 0:
+        if "exceptions.parquet" not in seen:
+            reasons.append("exceptions.parquet not listed in manifest")
+    elif _exception_rows > 0:
+        if "exceptions.parquet" not in seen:
+            reasons.append("exceptions.parquet not listed in manifest")
+    else:
+        checks["exceptions_rule"] = "zero_exception_rows_file_absent"
+        if "exceptions.parquet" in seen:
+            reasons.append("manifest inventories exceptions.parquet with zero exception rows")
     if not count_files:
         reasons.append("no data Parquet files verified")
     if len(observed_fingerprint) != 1 or fprint not in observed_fingerprint:
