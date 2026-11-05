@@ -284,6 +284,15 @@ def inspect_package(zip_path: Path, work: Path, *, release_registry: Path | None
             or not HEX64.fullmatch(release_hash.lower())
         ):
             raise OperatorError(f"Gitless pipeline release is not independently pinned: {pipeline_version or 'unknown'}")
+        pinned_runtime = release.get("runtime_source_sha256") if isinstance(release, dict) else None
+        if pinned_runtime is not None:
+            allowed = {pinned_runtime} if isinstance(pinned_runtime, str) else set(pinned_runtime or [])
+            allowed = {str(item).lower() for item in allowed}
+            if runtime_hash.lower() not in allowed:
+                raise OperatorError(
+                    f"Runtime source hash {runtime_hash.lower()} is not the one pinned for pipeline "
+                    f"{pipeline_version}"
+                )
         trust.update({"runtime_source_sha256": runtime_hash.lower(), "release_sha256": release_hash.lower()})
     return {
         "quarter": quarter,

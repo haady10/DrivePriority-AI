@@ -86,3 +86,33 @@ def test_arrow_rejects_type_conversion():
     bad=pa.RecordBatch.from_arrays([pa.array([],type=pa.date32()),pa.array([],type=pa.large_string()),pa.array([],type=pa.uint8())],names=["date","serial_number","failure"])
     with pytest.raises(SchemaUnionError):
         align_batch(bad,"2016Q1",plan,schema)
+
+
+SIX_NEW = ["cluster_id", "datacenter", "is_legacy_format", "pod_id", "pod_slot_num", "vault_id"]
+
+
+def test_2023_extension_string_columns_union_with_older_quarter():
+    """Option A columns (nullable strings, zero padding kept) unify with a 2021-style quarter."""
+    pa = pytest.importorskip("pyarrow")
+    from datetime import date
+    old = pa.schema([pa.field("date", pa.date32(), nullable=False), pa.field("serial_number", pa.string(), nullable=False),
+                     pa.field("failure", pa.uint8(), nullable=False)])
+    new = old
+    for name in SIX_NEW:
+        new = new.append(pa.field(name, pa.string(), nullable=True))
+    plan, schema = arrow_plan({"2021Q4": old, "2023Q4": new})
+    assert schema.names == old.names + SIX_NEW
+    assert all(schema.field(n).type == pa.string() and schema.field(n).nullable for n in SIX_NEW)
+    assert set(plan.absent_columns_by_quarter["2021Q4"]) == set(SIX_NEW)
+    assert not plan.absent_columns_by_quarter["2023Q4"]
+    b_old = pa.RecordBatch.from_arrays([pa.array([date(2021, 12, 31)], type=pa.date32()), pa.array(["A"]),
+                                        pa.array([0], type=pa.uint8())], schema=old)
+    out_old = align_batch(b_old, "2021Q4", plan, schema)
+    assert all(out_old.column(schema.get_field_index(n)).null_count == 1 for n in SIX_NEW)
+    vals = [pa.array([date(2023, 12, 31)], type=pa.date32()), pa.array(["B"]), pa.array([1], type=pa.uint8()),
+            pa.array(["040"]), pa.array([None], type=pa.string()), pa.array(["False"]), pa.array(["07"]),
+            pa.array(["0012"]), pa.array(["3001"])]
+    out_new = align_batch(pa.RecordBatch.from_arrays(vals, schema=new), "2023Q4", plan, schema)
+    assert out_new.column(schema.get_field_index("cluster_id")).to_pylist() == ["040"]
+    assert out_new.column(schema.get_field_index("datacenter")).to_pylist() == [None]
+    assert out_new.column(schema.get_field_index("pod_slot_num")).to_pylist() == ["0012"]

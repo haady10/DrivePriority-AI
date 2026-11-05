@@ -25,7 +25,8 @@ def _inventory(path: Path) -> dict[str, object]:
     return {"path": path.name, "bytes": path.stat().st_size, "sha256": _hash(path)}
 
 
-def make_evidence_zip(root: Path, quarter: str = "2016Q1", *, status: str = "passed", with_approval: bool = True) -> Path:
+def make_evidence_zip(root: Path, quarter: str = "2016Q1", *, status: str = "passed", with_approval: bool = True,
+                      gitless_runtime: str | None = None) -> Path:
     package = root / "payload"
     clean = package / "arbitrary" / "cleaned"
     analysis = package / "different" / "analysis"
@@ -36,7 +37,11 @@ def make_evidence_zip(root: Path, quarter: str = "2016Q1", *, status: str = "pas
     source_manifest = {
         "assigned_quarter": quarter,
         "source": {"sha256": HEX},
-        "software": {"pipeline_version": "0.3.0", "git": {"commit": COMMIT}},
+        "software": (
+            {"pipeline_version": "0.3.0", "git": {"commit": COMMIT}}
+            if gitless_runtime is None
+            else {"pipeline_version": "1.0.0-rc2", "recovery_identity": {"runtime_source_sha256": gitless_runtime}}
+        ),
     }
     manifest_path = clean / "source_manifest.json"
     manifest_path.write_text(json.dumps(source_manifest), encoding="utf-8")
@@ -354,3 +359,28 @@ def test_launcher_works_from_path_with_spaces(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert (root / "Reports" / "integration_run_0001.txt").is_file()
     assert "Integration finished successfully" in completed.stdout
+
+
+def _registry(tmp_path: Path, **extra: object) -> Path:
+    path = tmp_path / "registry.json"
+    path.write_text(json.dumps({"releases": {"1.0.0-rc2": {"package_sha256": "c" * 64, **extra}}}), encoding="utf-8")
+    return path
+
+
+def test_gitless_release_without_runtime_pin_keeps_version_only_check(tmp_path: Path) -> None:
+    package = make_evidence_zip(tmp_path, gitless_runtime="a" * 64)
+    result = operator.inspect_package(package, tmp_path / "work", release_registry=_registry(tmp_path))
+    assert result["trust"]["runtime_source_sha256"] == "a" * 64
+
+
+def test_gitless_release_with_matching_runtime_pin_is_accepted(tmp_path: Path) -> None:
+    package = make_evidence_zip(tmp_path, gitless_runtime="A" * 64)
+    registry = _registry(tmp_path, runtime_source_sha256=["b" * 64, "a" * 64])
+    assert operator.inspect_package(package, tmp_path / "work", release_registry=registry)["quarter"] == "2016Q1"
+
+
+def test_gitless_release_with_different_runtime_pin_is_blocked(tmp_path: Path) -> None:
+    package = make_evidence_zip(tmp_path, gitless_runtime="a" * 64)
+    registry = _registry(tmp_path, runtime_source_sha256="b" * 64)
+    with pytest.raises(operator.OperatorError, match="not the one pinned"):
+        operator.inspect_package(package, tmp_path / "work", release_registry=registry)

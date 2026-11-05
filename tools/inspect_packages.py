@@ -50,14 +50,14 @@ CENTRALLY_APPROVED = {  # quarter -> archive SHA-256 (configs/central_policy.jso
 GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
-def _load_registry(path: str | None) -> set[str] | None:
+def _load_registry(path: str | None) -> dict | None:
     if not path:
         return None
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     releases = data.get("releases")
     if not isinstance(releases, dict):
         raise SystemExit(f"Registry {path} has no 'releases' object")
-    return set(releases)
+    return releases
 
 
 def _members(z: zipfile.ZipFile, name: str) -> list[str]:
@@ -84,7 +84,7 @@ def _statuses(report: dict) -> str:
     return "; ".join(found[:3]) or "-"
 
 
-def inspect(path: Path, registry: set[str] | None = None) -> dict:
+def inspect(path: Path, registry: dict | None = None) -> dict:
     row = {"zip": path.name, "mb": round(path.stat().st_size / 1e6, 1), "quarter": "-",
            "archive_sha256": "-", "pipeline_version": "-", "revalidation": "-",
            "approval_level": "-", "research_use_approved": "-", "exception_rows": "-",
@@ -121,6 +121,13 @@ def inspect(path: Path, registry: set[str] | None = None) -> dict:
                 row["warnings"].append("pipeline version not checked (no --release-registry given)")
             elif version not in registry:
                 row["problems"].append(f"pipeline version {version!r} is not in the release trust registry")
+            else:
+                pinned = registry[version].get("runtime_source_sha256") if isinstance(registry[version], dict) else None
+                if pinned is not None:
+                    allowed = {str(x).lower() for x in ([pinned] if isinstance(pinned, str) else pinned)}
+                    if str(row["runtime_hash"]).lower() not in allowed:
+                        row["problems"].append(
+                            f"runtime source hash {row['runtime_hash']} is not the one pinned for {version}")
         rsrc = report.get("source") if isinstance(report.get("source"), dict) else {}
         ev = rsrc.get("approval_evidence") if isinstance(rsrc.get("approval_evidence"), dict) else {}
         row["approval_level"] = ev.get("evidence_level", "none")
