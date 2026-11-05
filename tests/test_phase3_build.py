@@ -136,6 +136,13 @@ def test_profile_runs(built):
     assert s["failed_drives"] == 2 and s["duplicate_drive_day_rows"] == 1
     for f in ("by_year.csv", "by_model.csv", "missing_by_year.csv", "feature_signal.csv", "class_balance.csv"):
         assert (out / f).exists()
+    import csv as _csv
+    rows = list(_csv.DictReader(open(out / "feature_signal.csv", encoding="utf-8")))
+    assert set(rows[0]) == {"attribute", "grp", "rows", "missing_pct", "nonzero_pct",
+                            "median_value_approx", "p99_value_approx"}
+    a5 = {r["grp"]: r for r in rows if r["attribute"] == "smart_5_raw"}
+    assert set(a5) == {"pre_failure_30d", "other"}
+    assert float(a5["pre_failure_30d"]["nonzero_pct"]) > float(a5["other"]["nonzero_pct"])
 
 
 def test_model_spacing_does_not_split_a_drive_and_bad_capacity_is_null(tmp_path):

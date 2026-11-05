@@ -108,19 +108,31 @@ def main(argv: list[str] | None = None) -> int:
         FROM src s JOIN drives d USING (drive_id)
         WHERE d.fail_date IS NULL OR s.date < d.fail_date
     """)
-    sig = []
+    # One streaming pass for all attributes. Exact median/percentile aggregates keep every value in memory
+    # (they ran out of memory on ~94M rows), so median and p99 use DuckDB's t-digest approximation.
+    # Counts and percentages are exact.
+    exprs = []
     for attr in MODEL_ATTRS:
         c = f"smart_{attr}_raw"
-        sig.append(f"""
-          SELECT '{c}' AS attribute, grp,
-                 count(*) AS rows,
-                 round(100.0 * avg(CASE WHEN {c} IS NULL THEN 1 ELSE 0 END), 2) AS missing_pct,
-                 round(100.0 * avg(CASE WHEN {c} > 0 THEN 1 ELSE 0 END), 3) AS nonzero_pct,
-                 round(median({c}), 2) AS median_value,
-                 round(quantile_cont({c}, 0.99), 2) AS p99_value
-          FROM tagged GROUP BY grp""")
-    con.execute(f"COPY ({' UNION ALL '.join(sig)} ORDER BY attribute, grp) TO "
-                f"'{(out / 'feature_signal.csv').as_posix()}' (HEADER)")
+        exprs.append(f"round(100.0 * avg(CASE WHEN {c} IS NULL THEN 1 ELSE 0 END), 2) AS miss_{attr}")
+        exprs.append(f"round(100.0 * avg(CASE WHEN {c} > 0 THEN 1 ELSE 0 END), 3) AS nz_{attr}")
+        exprs.append(f"round(approx_quantile({c}, 0.5), 2) AS med_{attr}")
+        exprs.append(f"round(approx_quantile({c}, 0.99), 2) AS p99_{attr}")
+    cur = con.execute(f"SELECT grp, count(*) AS rows, {', '.join(exprs)} FROM tagged GROUP BY grp ORDER BY grp")
+    names = [d[0] for d in cur.description]
+    sig_rows = []
+    for rec in cur.fetchall():
+        r = dict(zip(names, rec))
+        for attr in MODEL_ATTRS:
+            sig_rows.append([f"smart_{attr}_raw", r["grp"], r["rows"], r[f"miss_{attr}"], r[f"nz_{attr}"],
+                             r[f"med_{attr}"], r[f"p99_{attr}"]])
+    sig_rows.sort(key=lambda x: (x[0], x[1]))
+    import csv
+    with open(out / "feature_signal.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["attribute", "grp", "rows", "missing_pct", "nonzero_pct",
+                    "median_value_approx", "p99_value_approx"])
+        w.writerows(sig_rows)
 
     print("[7/7] Class balance per horizon ...", flush=True)
     con.execute(f"""
