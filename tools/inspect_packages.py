@@ -4,6 +4,11 @@ Standalone (standard library only). Never extracts or changes a ZIP.
 
 Usage:
   python inspect_packages.py <folder with quarter ZIPs> [--csv report.csv]
+         [--release-registry central_release_trust_....json]
+
+With --release-registry the tool also checks that the pipeline version in each
+package is listed in that trust registry (the central gate blocks it otherwise).
+Without it that check is skipped and every package gets a NOTE saying so.
 
 Checks per ZIP (the same rules the central gate applies):
   * exactly one of each of the five evidence files
@@ -12,6 +17,8 @@ Checks per ZIP (the same rules the central gate applies):
     - the three quarters approved centrally (2016Q3, 2018Q3, 2019Q3) only warn about this
   * exceptions.parquet rule: required and listed only when processing.exception_rows > 0;
     with 0 exception rows the file must be absent and unlisted
+  * pipeline version is in the release trust registry (only when --release-registry is given;
+    packages that record a git commit are checked against the pinned commit by the gate instead)
   * authenticity_verified must not be true unless a publisher checksum really was verified (warning)
 
 For every ZIP it prints: quarter, archive SHA-256 of the raw Backblaze file the
@@ -24,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -37,6 +45,19 @@ CENTRALLY_APPROVED = {  # quarter -> archive SHA-256 (configs/central_policy.jso
     "2018Q3": "7ef11ee1a22c97780222d4c7e6e4031ba6d333f0071ccc9784989428f2d6bcec",
     "2019Q3": "53de1c8d32da5dfb0f6de3317b01af4b72630ff618d10a3781c322cc433ebd1d",
 }
+
+
+GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
+
+
+def _load_registry(path: str | None) -> set[str] | None:
+    if not path:
+        return None
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    releases = data.get("releases")
+    if not isinstance(releases, dict):
+        raise SystemExit(f"Registry {path} has no 'releases' object")
+    return set(releases)
 
 
 def _members(z: zipfile.ZipFile, name: str) -> list[str]:
@@ -63,11 +84,11 @@ def _statuses(report: dict) -> str:
     return "; ".join(found[:3]) or "-"
 
 
-def inspect(path: Path) -> dict:
+def inspect(path: Path, registry: set[str] | None = None) -> dict:
     row = {"zip": path.name, "mb": round(path.stat().st_size / 1e6, 1), "quarter": "-",
            "archive_sha256": "-", "pipeline_version": "-", "revalidation": "-",
            "approval_level": "-", "research_use_approved": "-", "exception_rows": "-",
-           "problems": [], "warnings": []}
+           "runtime_hash": "-", "problems": [], "warnings": []}
     try:
         z = zipfile.ZipFile(path)
     except Exception as exc:
@@ -88,6 +109,18 @@ def inspect(path: Path) -> dict:
         row["archive_sha256"] = source.get("sha256", "-")
         row["pipeline_version"] = software.get("pipeline_version", "-")
         row["revalidation"] = _statuses(report)
+        git = software.get("git") if isinstance(software.get("git"), dict) else {}
+        commit = git.get("commit")
+        recovery = software.get("recovery_identity") if isinstance(software.get("recovery_identity"), dict) else {}
+        row["runtime_hash"] = recovery.get("runtime_source_sha256", "-")
+        if isinstance(commit, str) and GIT_COMMIT.fullmatch(commit.lower()):
+            row["warnings"].append("pipeline recorded by git commit; the gate checks it against the pinned commit")
+        elif sm:
+            version = str(row["pipeline_version"])
+            if registry is None:
+                row["warnings"].append("pipeline version not checked (no --release-registry given)")
+            elif version not in registry:
+                row["problems"].append(f"pipeline version {version!r} is not in the release trust registry")
         rsrc = report.get("source") if isinstance(report.get("source"), dict) else {}
         ev = rsrc.get("approval_evidence") if isinstance(rsrc.get("approval_evidence"), dict) else {}
         row["approval_level"] = ev.get("evidence_level", "none")
@@ -130,18 +163,21 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("folder")
     p.add_argument("--csv")
+    p.add_argument("--release-registry", dest="registry")
     a = p.parse_args()
     folder = Path(a.folder)
     zips = sorted(folder.glob("*.zip"))
     if not zips:
         print(f"No ZIP files in {folder}")
         return 2
-    rows = [inspect(z) for z in zips]
+    registry = _load_registry(a.registry)
+    rows = [inspect(z, registry) for z in zips]
     for r in rows:
         print(f"\n{r['zip']}  ({r['mb']} MB)")
         print(f"  quarter           : {r['quarter']}")
         print(f"  archive sha256    : {r['archive_sha256']}")
         print(f"  pipeline version  : {r['pipeline_version']}")
+        print(f"  runtime hash      : {r['runtime_hash']}")
         print(f"  revalidation      : {r['revalidation']}")
         print(f"  approval level    : {r['approval_level']}   research-use approved: {r['research_use_approved']}")
         print(f"  exception rows    : {r['exception_rows']}")
@@ -151,10 +187,10 @@ def main() -> int:
     if a.csv:
         with open(a.csv, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow(["zip", "mb", "quarter", "archive_sha256", "pipeline_version", "revalidation",
+            w.writerow(["zip", "mb", "quarter", "archive_sha256", "pipeline_version", "runtime_hash", "revalidation",
                         "approval_level", "research_use_approved", "exception_rows", "problems", "notes"])
             for r in rows:
-                w.writerow([r["zip"], r["mb"], r["quarter"], r["archive_sha256"], r["pipeline_version"],
+                w.writerow([r["zip"], r["mb"], r["quarter"], r["archive_sha256"], r["pipeline_version"], r["runtime_hash"],
                             r["revalidation"], r["approval_level"], r["research_use_approved"],
                             r["exception_rows"], " | ".join(r["problems"]), " | ".join(r["warnings"])])
         print(f"\nCSV written: {a.csv}")
