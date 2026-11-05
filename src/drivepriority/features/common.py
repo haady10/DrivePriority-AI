@@ -21,7 +21,10 @@ MODEL_ATTRS = COUNTER_ATTRS + OTHER_ATTRS
 # The traditional SMART baseline (Phase 1, section 20).
 SMART_RULE_ATTRS = (5, 187, 188, 197, 198)
 
-DRIVE_ID_SQL = "serial_number || '|' || coalesce(model, '')"
+# Model text is normalised ONLY for identity (collapse repeated spaces, trim). The original
+# model column is kept untouched. Backblaze models such as "WDC  WD40..." vs "WDC WD40..."
+# would otherwise split one physical drive into two identities.
+DRIVE_ID_SQL = "serial_number || '|' || regexp_replace(trim(coalesce(model, '')), '\\s+', ' ', 'g')"
 MANUFACTURER_SQL = """
 CASE
   WHEN model LIKE 'ST%' OR upper(model) LIKE 'SEAGATE%' THEN 'Seagate'
@@ -74,8 +77,9 @@ def create_source_view(con: duckdb.DuckDBPyConnection, snapshot: str | Path) -> 
         "model",
         f"{DRIVE_ID_SQL} AS drive_id",
         f"{MANUFACTURER_SQL} AS manufacturer_group",
-        ("CAST(capacity_bytes AS DOUBLE) AS capacity_bytes" if "capacity_bytes" in cols
-         else "CAST(NULL AS DOUBLE) AS capacity_bytes"),
+        # Capacity <= 0 (Backblaze uses -1 for a failed read) is not a capacity: treat as NULL.
+        ("CASE WHEN capacity_bytes > 0 THEN CAST(capacity_bytes AS DOUBLE) END AS capacity_bytes"
+         if "capacity_bytes" in cols else "CAST(NULL AS DOUBLE) AS capacity_bytes"),
         "CAST(failure AS INTEGER) AS failure",
     ]
     for a in MODEL_ATTRS:

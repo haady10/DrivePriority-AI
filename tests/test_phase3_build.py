@@ -136,3 +136,38 @@ def test_profile_runs(built):
     assert s["failed_drives"] == 2 and s["duplicate_drive_day_rows"] == 1
     for f in ("by_year.csv", "by_model.csv", "missing_by_year.csv", "feature_signal.csv", "class_balance.csv"):
         assert (out / f).exists()
+
+
+def test_model_spacing_does_not_split_a_drive_and_bad_capacity_is_null(tmp_path):
+    from datetime import date as _d
+    rows = []
+    for i in range(10):
+        d = _d(2020, 1, 1) + timedelta(days=i)
+        model = "WDC  WD40EFRX" if i % 2 else "WDC WD40EFRX"      # spacing differs day to day
+        rows.append(dict(date=d, serial="S1", model=model, failure=0, s5=0))
+    snap = tmp_path / "snap"
+    _write_snapshot(snap, rows)
+    out = tmp_path / "out"
+    rc = build_dataset.main(["--snapshot", str(snap), "--out", str(out), "--train-end", "2020-01-31",
+                             "--valid-end", "2020-02-29", "--test-end", "2020-03-31",
+                             "--train-rate", "1.0", "--eval-rate", "1.0", "--memory-limit", "1GB",
+                             "--temp-dir", str(tmp_path / "tmp")])
+    assert rc == 0
+    tr = pq.read_table(out / "model_train.parquet").to_pandas()
+    assert tr.drive_id.nunique() == 1                      # one drive, not two
+    assert set(tr.model) == {"WDC  WD40EFRX", "WDC WD40EFRX"}   # original model text preserved
+
+    bad = tmp_path / "bad"
+    _write_snapshot(bad, rows)
+    part = next(bad.rglob("*.parquet"))
+    t = pq.read_table(part)
+    t = t.set_column(t.schema.get_field_index("capacity_bytes"), "capacity_bytes",
+                     pa.array([-1] * t.num_rows, pa.int64()))
+    pq.write_table(t, part)
+    out2 = tmp_path / "out2"
+    assert build_dataset.main(["--snapshot", str(bad), "--out", str(out2), "--train-end", "2020-01-31",
+                               "--valid-end", "2020-02-29", "--test-end", "2020-03-31",
+                               "--train-rate", "1.0", "--eval-rate", "1.0", "--memory-limit", "1GB",
+                               "--temp-dir", str(tmp_path / "tmp2")]) == 0
+    tr2 = pq.read_table(out2 / "model_train.parquet").to_pandas()
+    assert tr2.capacity_tb.isna().all()                    # -1 never becomes a negative capacity
