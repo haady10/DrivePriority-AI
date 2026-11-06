@@ -114,4 +114,15 @@ def test_train_h2o_end_to_end(tmp_path):
     sc = pd.read_parquet(out / "scores_test.parquet")
     assert {"model", "drive_id", "date", "label", "eval_fail_date", "score"} <= set(sc.columns)
     assert sc["score"].between(0, 1).all()
+    # Unknown-outcome drives are scored too (the inspection replay needs them) but not evaluated.
+    assert sc["label"].isna().any() and (sc["label_known"] == sc["label"].notna()).all()
+    assert {"smart_rule_flag", "smart_rule_score"} <= set(sc.columns)
+    n_unknown = checks["unknown_labels_scored_not_evaluated"]["test"]
+    assert n_unknown > 0
+    per_model = sc.groupby("model").size()
+    assert (per_model == checks["rows_scored"]["test"]).all()
+    assert (sc[sc["model"] == "gbm"]["label"].isna().sum()) == n_unknown
+    mt = m[(m["model"] == "gbm") & (m["split"] == "test")].iloc[0]
+    assert mt["rows"] == checks["rows_scored"]["test"] - n_unknown  # metrics use known rows only
     assert not (out / "h2o_train.parquet").exists()  # temporary files are cleaned up
+    assert not (out / "h2o_test_all.parquet").exists()

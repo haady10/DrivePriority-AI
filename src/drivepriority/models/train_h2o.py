@@ -10,7 +10,9 @@ Output: metrics.csv, rule_baseline.csv, calibration.csv, scores_valid.parquet, s
         importance_<model>.csv, checks.json, run_info.json (in --out).
 
 Rules that keep the result honest:
-* Rows with an unknown (NULL) label are dropped, never treated as healthy.
+* Rows with an unknown (NULL) label are never treated as healthy. They are dropped from
+  training and from the metrics, but in validation/test they ARE scored and written to the score
+  files with an empty label, because the inspection simulation needs every observable drive.
 * Only the features listed in phase3_manifest.json are model inputs. drive_id, date, split,
   weight, eval_fail_date and model are never inputs (checked, the run stops otherwise).
 * Training uses the sampling weight, so probabilities refer to the real fleet. Healthy training
@@ -85,26 +87,33 @@ def prepare_files(data: Path, out: Path, horizon: int, features: list[str], neg_
 
     for split in ("valid", "test"):
         src = (data / f"model_{split}.parquet").as_posix()
+        # ALL rows get a row_id: unknown-label rows stay (they are scored, not evaluated).
         con.execute(f"""
             CREATE TEMP TABLE t_{split} AS
             SELECT row_number() OVER (ORDER BY date, drive_id) AS row_id, *
-            FROM read_parquet('{src}') WHERE {label} IS NOT NULL""")
+            FROM read_parquet('{src}')""")
+        # Labelled rows only: H2O validation frame (early stopping / lambda choice).
         con.execute(f"""
             COPY (SELECT row_id, {feat_sql}, CAST({label} AS INTEGER) AS y, CAST(weight AS DOUBLE) AS w
-                  FROM t_{split} ORDER BY row_id)
+                  FROM t_{split} WHERE {label} IS NOT NULL ORDER BY row_id)
             TO '{(out / f'h2o_{split}.parquet').as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
+        # Every row, labelled or not: scored for the daily risk-score export.
+        con.execute(f"""
+            COPY (SELECT row_id, {feat_sql} FROM t_{split} ORDER BY row_id)
+            TO '{(out / f'h2o_{split}_all.parquet').as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
         con.execute(f"""
             COPY (SELECT row_id, drive_id, date, eval_fail_date, CAST({label} AS INTEGER) AS y,
                          CAST(weight AS DOUBLE) AS w, CAST(smart_rule_flag AS INTEGER) AS smart_rule_flag,
                          CAST(smart_rule_score AS DOUBLE) AS smart_rule_score
                   FROM t_{split} ORDER BY row_id)
             TO '{(out / f'meta_{split}.parquet').as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
-        r = con.execute(f"""SELECT count(*), count(*) FILTER (WHERE y = 1), min(date), max(date),
+        r = con.execute(f"""SELECT count(*), count(y), count(*) FILTER (WHERE y = 1), min(date), max(date),
                                    count(*) FILTER (WHERE eval_fail_date IS NOT NULL AND eval_fail_date <= date)
                             FROM read_parquet('{(out / f'meta_{split}.parquet').as_posix()}')""").fetchone()
-        unknown = con.execute(f"SELECT count(*) FROM read_parquet('{src}') WHERE {label} IS NULL").fetchone()[0]
-        counts[split] = {"rows_used": r[0], "positives_used": r[1], "first_date": str(r[2]), "last_date": str(r[3]),
-                         "rows_at_or_after_failure": r[4], "unknown_label_rows_dropped": unknown}
+        counts[split] = {"rows_scored": r[0], "rows_used": r[1], "positives_used": r[2],
+                         "first_date": str(r[3]), "last_date": str(r[4]),
+                         "rows_at_or_after_failure": r[5], "unknown_label_rows_dropped": 0,
+                         "unknown_label_rows_scored_not_evaluated": r[0] - r[1]}
     con.close()
     return counts
 
@@ -174,12 +183,13 @@ def main(argv: list[str] | None = None) -> int:
         if not (data / f"model_{split}.parquet").is_file():
             raise SystemExit(f"Missing {data / f'model_{split}.parquet'}")
 
-    print("[1/6] Preparing files (drop unknown labels, features as DOUBLE) ...", flush=True)
+    print("[1/6] Preparing files (features as DOUBLE; unknown labels: not trained on, scored later) ...", flush=True)
     counts = prepare_files(data, out, a.horizon, features, a.neg_keep, a.duckdb_memory,
                            None if a.nthreads < 1 else a.nthreads)
     for split, c in counts.items():
-        print(f"  {split}: {c['rows_used']:,} rows used, {c['positives_used']:,} positives, "
-              f"{c['unknown_label_rows_dropped']:,} unknown-label rows dropped", flush=True)
+        unk = (f"{c['unknown_label_rows_dropped']:,} unknown-label rows dropped" if split == "train"
+               else f"{c['unknown_label_rows_scored_not_evaluated']:,} unknown-label rows scored, not evaluated")
+        print(f"  {split}: {c['rows_used']:,} rows used, {c['positives_used']:,} positives, {unk}", flush=True)
     if counts["train"]["positives_used"] == 0 or counts["valid"]["positives_used"] == 0:
         raise SystemExit("Train or validation has no positive rows for this horizon; cannot train.")
 
@@ -188,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     h2o.init(max_mem_size=a.max_mem_size, nthreads=a.nthreads)
     h2o.no_progress()
     frames = {}
-    for split in ("train", "valid", "test"):
+    for split in ("train", "valid"):
         fr = h2o.import_file((out / f"h2o_{split}.parquet").as_posix())
         fr["y"] = fr["y"].asfactor()
         frames[split] = fr
@@ -212,10 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     metas, score_rows = {}, {}
     for split in ("valid", "test"):
         metas[split] = pd.read_parquet(out / f"meta_{split}.parquet")
+        scoring = h2o.import_file((out / f"h2o_{split}_all.parquet").as_posix())  # every row, labelled or not
         frame_parts = []
         for name, model in trained.items():
-            pred = model.predict(frames[split])
-            df = frames[split][["row_id"]].cbind(pred["p1"]).as_data_frame(use_multi_thread=True)
+            pred = model.predict(scoring)
+            df = scoring[["row_id"]].cbind(pred["p1"]).as_data_frame(use_multi_thread=True)
             df.columns = ["row_id", "score"]
             df["model"] = name
             frame_parts.append(df)
@@ -230,7 +241,10 @@ def main(argv: list[str] | None = None) -> int:
     print("[5/6] Metrics ...", flush=True)
     metric_rows, rule_rows, calib = [], [], []
     for split in ("valid", "test"):
+        # Metrics use only rows whose outcome is known; unknown-label rows are scored but not evaluated.
         meta = metas[split]
+        meta = meta[meta["y"].notna()].copy()
+        meta["y"] = meta["y"].astype(int)
         flag_count = int((meta["smart_rule_flag"] > 0).sum())
         rm = rule_metrics(meta["y"], meta["smart_rule_flag"])
         rule_rows.append({"horizon": a.horizon, "split": split, **rm})
@@ -257,8 +271,11 @@ def main(argv: list[str] | None = None) -> int:
     for split in ("valid", "test"):
         merged = score_rows[split].merge(metas[split], on="row_id", how="left")
         merged["horizon"] = a.horizon
-        merged = merged[["horizon", "model", "row_id", "drive_id", "date", "eval_fail_date", "y", "w",
-                         "score"]].rename(columns={"y": "label", "w": "weight"})
+        merged["y"] = merged["y"].astype("Int64")  # empty = outcome unknown (kept as a competitor in the replay)
+        merged["label_known"] = merged["y"].notna()
+        merged = merged[["horizon", "model", "row_id", "drive_id", "date", "eval_fail_date", "y", "label_known",
+                         "w", "score", "smart_rule_flag", "smart_rule_score"]].rename(
+            columns={"y": "label", "w": "weight"})
         merged.sort_values(["model", "date", "drive_id"]).to_parquet(out / f"scores_{split}.parquet", index=False)
     for name, model in trained.items():
         try:
@@ -280,6 +297,9 @@ def main(argv: list[str] | None = None) -> int:
         "forbidden_features_present": [],
         "rows_at_or_after_failure": {s: counts[s].get("rows_at_or_after_failure", 0) for s in ("valid", "test")},
         "unknown_labels_dropped": {s: counts[s]["unknown_label_rows_dropped"] for s in counts},
+        "unknown_labels_scored_not_evaluated": {s: counts[s]["unknown_label_rows_scored_not_evaluated"]
+                                                for s in ("valid", "test")},
+        "rows_scored": {s: counts[s]["rows_scored"] for s in ("valid", "test")},
         "date_ranges": {s: [counts[s]["first_date"], counts[s]["last_date"]] for s in counts},
         "warnings": warnings,
     }
@@ -297,7 +317,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     (out / "run_info.json").write_text(json.dumps(info, indent=2, default=str), encoding="utf-8")
     h2o.cluster().shutdown(prompt=False)
-    for tmp in ("h2o_train.parquet", "h2o_valid.parquet", "h2o_test.parquet"):
+    for tmp in ("h2o_train.parquet", "h2o_valid.parquet", "h2o_test.parquet",
+                "h2o_valid_all.parquet", "h2o_test_all.parquet"):
         (out / tmp).unlink(missing_ok=True)
 
     show = metrics[["split", "model", "average_precision", "roc_auc", "recall_at_smart_volume"]]
