@@ -62,10 +62,14 @@ def feature_definitions() -> list[tuple[str, str, str]]:
         feats.append((f"smart_{a}_missing", f"CAST({c} IS NULL AS INTEGER)", f"1 if SMART {a} not reported on day t"))
     for a in COUNTER_ATTRS:
         c = f"smart_{a}_raw"
-        feats.append((f"smart_{a}_diff7", f"{c} - first_value({c} IGNORE NULLS) OVER w7",
-                      f"Change of SMART {a} over the last 7 days (past only)"))
-        feats.append((f"smart_{a}_diff30", f"{c} - first_value({c} IGNORE NULLS) OVER w30",
-                      f"Change of SMART {a} over the last 30 days (past only)"))
+        # NULL (not 0) when there is no earlier reported value inside the window, so a true zero
+        # change is never confused with a missing comparison (count includes the current row).
+        feats.append((f"smart_{a}_diff7",
+                      f"CASE WHEN count({c}) OVER w7 >= 2 THEN {c} - first_value({c} IGNORE NULLS) OVER w7 END",
+                      f"Change of SMART {a} over the last 7 days (past only; NULL if no earlier value in the window)"))
+        feats.append((f"smart_{a}_diff30",
+                      f"CASE WHEN count({c}) OVER w30 >= 2 THEN {c} - first_value({c} IGNORE NULLS) OVER w30 END",
+                      f"Change of SMART {a} over the last 30 days (past only; NULL if no earlier value in the window)"))
     feats += [
         ("smart_194_mean7", "avg(smart_194_raw) OVER w7", "Mean temperature (SMART 194) over the last 7 days"),
         ("age_days", "smart_9_raw / 24.0", "Power-on age in days (SMART 9 hours / 24)"),

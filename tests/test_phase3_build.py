@@ -232,3 +232,32 @@ def test_duplicate_rule_audit_and_determinism(tmp_path):
     tr2 = pq.read_table(out2 / "model_train.parquet").to_pandas()
     import pandas as pd
     pd.testing.assert_frame_equal(tr.reset_index(drop=True), tr2.reset_index(drop=True))
+
+
+def test_diff_is_null_without_earlier_value(built):
+    tr, *_ = built
+    first = tr[tr.drive_id.str.startswith("B|")].sort_values("date").iloc[0]
+    assert first.smart_5_diff7 != first.smart_5_diff7 and first.smart_5_diff30 != first.smart_5_diff30  # NaN
+    assert _row(tr, "B", date(2020, 1, 2)).smart_5_diff7 == 0      # one earlier value -> a real zero change
+
+
+def test_output_independent_of_input_row_order(tmp_path):
+    """R14: shuffled input order (incl. conflicting duplicates) gives byte-identical model rows."""
+    import random
+    import pandas as pd
+    rows = _fleet()
+    rows.append(dict(date=date(2020, 2, 3), serial="B", model="ST4000DM000", failure=0, s5=4))   # conflict
+    rows.append(dict(date=date(2020, 2, 4), serial="B", model="ST4000DM000", failure=0, s5=None))
+    outs = []
+    for tag, order in (("a", rows), ("b", list(reversed(rows))), ("c", random.Random(3).sample(rows, len(rows)))):
+        snap = tmp_path / f"s{tag}"
+        _write_snapshot(snap, order)
+        out = tmp_path / f"o{tag}"
+        assert build_dataset.main(["--snapshot", str(snap), "--out", str(out), "--train-end", "2020-12-31",
+                                   "--valid-end", "2021-12-31", "--test-end", "2022-12-31", "--train-rate", "1.0",
+                                   "--eval-rate", "1.0", "--memory-limit", "1GB", "--threads", "4",
+                                   "--temp-dir", str(tmp_path / f"t{tag}")]) == 0
+        outs.append({s: pq.read_table(out / f"model_{s}.parquet").to_pandas() for s in ("train", "valid", "test")})
+    for other in outs[1:]:
+        for s in ("train", "valid", "test"):
+            pd.testing.assert_frame_equal(outs[0][s].reset_index(drop=True), other[s].reset_index(drop=True))
