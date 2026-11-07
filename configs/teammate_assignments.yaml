@@ -1,0 +1,9 @@
+version: "1.0.0"
+
+# The research lead must populate these lists with quarters from 2016Q1 through
+# 2026Q2. Empty assignments fail closed; the launcher never guesses ownership.
+assignments:
+  Faheem: []
+  Zahid: []
+  Sulaiman: []
+  Shuhail: []
