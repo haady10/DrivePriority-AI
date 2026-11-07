@@ -126,3 +126,17 @@ def test_train_h2o_end_to_end(tmp_path):
     assert mt["rows"] == checks["rows_scored"]["test"] - n_unknown  # metrics use known rows only
     assert not (out / "h2o_train.parquet").exists()  # temporary files are cleaned up
     assert not (out / "h2o_test_all.parquet").exists()
+
+
+def test_port_in_use_stops_before_any_work(tmp_path):
+    """Two runs must never share one H2O cluster: a busy port stops the run immediately."""
+    import socket
+    from drivepriority.models import train_h2o
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        with pytest.raises(SystemExit) as exc:
+            train_h2o.main(["--data", str(tmp_path / "none"), "--horizon", "7", "--out", str(tmp_path / "o"),
+                            "--port", str(port)])
+        assert "already in use" in str(exc.value)

@@ -155,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--neg-keep", type=float, default=0.25,
                    help="fraction of healthy TRAINING rows kept (weights are scaled up); 1 keeps all")
     p.add_argument("--max-mem-size", default="8G", help="H2O memory, e.g. 8G")
+    p.add_argument("--port", type=int, default=54321,
+                   help="H2O port. Use different ports (e.g. 54321 and 54421) to run two horizons on one PC at once")
     p.add_argument("--nthreads", type=int, default=-1)
     p.add_argument("--duckdb-memory", default="4GB")
     p.add_argument("--seed", type=int, default=42)
@@ -163,6 +165,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--drf-depth", type=int, default=12)
     p.add_argument("--save-models", action="store_true", help="also save the binary H2O models")
     a = p.parse_args(argv)
+    import socket
+    for q in (a.port, a.port + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1)
+            if probe.connect_ex(("127.0.0.1", q)) == 0:
+                raise SystemExit(f"Port {q} is already in use (another H2O run?). Stopping so two runs do not "
+                                 f"share one H2O cluster. Choose another one, e.g. --port {a.port + 100}.")
     if not 0 < a.neg_keep <= 1:
         raise SystemExit("--neg-keep must be in (0, 1]")
     names = [m.strip() for m in a.models.split(",") if m.strip()]
@@ -195,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import h2o
     print("[2/6] Starting H2O ...", flush=True)
-    h2o.init(max_mem_size=a.max_mem_size, nthreads=a.nthreads)
+    h2o.init(port=a.port, max_mem_size=a.max_mem_size, nthreads=a.nthreads)
     h2o.no_progress()
     frames = {}
     for split in ("train", "valid"):
