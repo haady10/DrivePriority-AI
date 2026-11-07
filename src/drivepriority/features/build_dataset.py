@@ -2,8 +2,13 @@
 
 Implements Phase 1 methodology sections 13-18 on the integrated snapshot (read-only):
 
-* Drive identity  = serial_number + model. One row per drive per day (duplicates
-  collapsed, failure kept if any copy has it; the count is reported).
+* Drive identity  = serial_number + model. One row per drive per day. Duplicate drive-days
+  are collapsed by a fixed rule: (1) a row with failure = 1 wins, (2) otherwise the row with
+  the most non-null modelling values, (3) otherwise the smallest content hash. Nothing is
+  averaged or invented. Groups whose rows DIFFER are flagged (dup_conflict = 1, never a
+  model input) and written, with every original row, to duplicate_conflicts.parquet;
+  duplicate_audit.csv and the manifest count exact vs conflicting groups and the differing
+  columns (sampled drives only; the cleaning reports and the profile hold the fleet totals).
 * Event           = first recorded failure flag of a drive. The failure day and any
   later rows are removed from model inputs (no leakage of the event itself).
 * Labels (H = 7, 14, 30 days), for a prediction made at the end of day t:
@@ -25,7 +30,7 @@ Implements Phase 1 methodology sections 13-18 on the integrated snapshot (read-o
 
 Outputs (in --out):
   model_train.parquet, model_valid.parquet, model_test.parquet
-  feature_dictionary.csv, phase3_manifest.json
+  feature_dictionary.csv, phase3_manifest.json, duplicate_audit.csv, duplicate_conflicts.parquet
 
 Usage (Windows, from the repo root):
   .venv\\Scripts\\python -m drivepriority.features.build_dataset --snapshot "<Integrated_Data\\snapshot>" --out data\\processed\\phase3
@@ -71,6 +76,44 @@ def feature_definitions() -> list[tuple[str, str, str]]:
          "Sum of the error counters 5/187/188/197/198/199"),
     ]
     return feats
+
+
+def write_duplicate_audit(con, out: Path, test_end) -> dict:
+    """Duplicate drive-day audit over the sampled drives (reads only the small duplicate set)."""
+    cmp_cols = ["capacity_bytes", "failure"] + [f"smart_{x}_raw" for x in MODEL_ATTRS]
+    tot = con.execute("""
+        SELECT count(*), count(*) FILTER (WHERE NOT conflicting), count(*) FILTER (WHERE conflicting),
+               count(*) FILTER (WHERE conflicting AND any_failure = 1), coalesce(sum(n_rows - 1), 0)
+        FROM dup_groups""").fetchone()
+    differing = {}
+    if tot[2]:
+        # aggregate per group first, then count groups where the column differs
+        sub = ", ".join(
+            f"(min({c}) <> max({c}) OR (count({c}) > 0 AND count({c}) < count(*))) AS {c}" for c in cmp_cols)
+        row = con.execute(f"""
+            SELECT {', '.join(f'count(*) FILTER (WHERE {c})' for c in cmp_cols)} FROM (
+              SELECT {sub} FROM obs_all a SEMI JOIN (SELECT drive_id, date FROM dup_groups WHERE conflicting) g
+                   USING (drive_id, date) GROUP BY drive_id, date)""").fetchone()
+        differing = {c: n for c, n in zip(cmp_cols, row) if n}
+    con.execute(f"""
+        COPY (SELECT year(date) AS year, count(*) AS duplicate_groups,
+                     count(*) FILTER (WHERE NOT conflicting) AS exact_groups,
+                     count(*) FILTER (WHERE conflicting) AS conflicting_groups,
+                     count(*) FILTER (WHERE conflicting AND any_failure = 1) AS conflicting_with_failure,
+                     sum(n_rows - 1) AS extra_rows_removed
+              FROM dup_groups GROUP BY 1 ORDER BY 1)
+        TO '{(out / 'duplicate_audit.csv').as_posix()}' (HEADER)""")
+    con.execute(f"""
+        COPY (SELECT a.*, (a.rn = 1) AS kept FROM obs_all a
+              SEMI JOIN (SELECT drive_id, date FROM dup_groups WHERE conflicting) g USING (drive_id, date)
+              ORDER BY drive_id, date, rn)
+        TO '{(out / 'duplicate_conflicts.parquet').as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
+    return {"scope": "sampled drives only, date <= test_end (fleet totals: cleaning reports and profile)",
+            "compared_columns": cmp_cols,
+            "tie_break": "failure=1, then most non-null modelling values, then smallest content hash",
+            "duplicate_groups": tot[0], "exact_groups": tot[1], "conflicting_groups": tot[2],
+            "conflicting_groups_involving_failure": tot[3], "extra_rows_removed": tot[4],
+            "conflicting_groups_by_differing_column": differing}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -126,19 +169,37 @@ def main(argv: list[str] | None = None) -> int:
     """)
 
     print("[2/5] Collecting rows of sampled drives (one row per drive-day) ...", flush=True)
+    # Content signature of a record over the modelling columns (identical rows -> identical hash).
+    sig_cols = ["s.capacity_bytes", "s.failure"] + [f"s.smart_{x}_raw" for x in MODEL_ATTRS]
+    nn_expr = " + ".join(f"CAST({c} IS NOT NULL AS INTEGER)" for c in sig_cols[2:])
     con.execute(f"""
-        CREATE TEMP TABLE obs AS
-        SELECT * EXCLUDE (rn) FROM (
-          SELECT s.*, d.first_seen, d.last_seen, d.fail_date, d.in_train, d.in_eval,
-                 d.train_weight, d.eval_weight,
-                 row_number() OVER (PARTITION BY s.drive_id, s.date ORDER BY s.failure DESC) AS rn
-          FROM src s JOIN sel d USING (drive_id)
-          WHERE s.date <= DATE '{test_end}'
-        ) WHERE rn = 1
+        CREATE TEMP TABLE obs_all AS
+        SELECT s.*, d.first_seen, d.last_seen, d.fail_date, d.in_train, d.in_eval,
+               d.train_weight, d.eval_weight,
+               hash({', '.join(sig_cols)}) AS rec_sig,
+               count(*) OVER (PARTITION BY s.drive_id, s.date) AS day_rows,
+               row_number() OVER (PARTITION BY s.drive_id, s.date
+                                  ORDER BY s.failure DESC, ({nn_expr}) DESC,
+                                           hash({', '.join(sig_cols)}) ASC) AS rn
+        FROM src s JOIN sel d USING (drive_id)
+        WHERE s.date <= DATE '{test_end}'
     """)
-    dup_rows = con.execute(f"""
-        SELECT count(*) FROM src s SEMI JOIN sel USING (drive_id) WHERE s.date <= DATE '{test_end}'
-    """).fetchone()[0] - con.execute("SELECT count(*) FROM obs").fetchone()[0]
+    # Flag drive-days whose duplicate rows differ (computed on the small set of duplicated days only).
+    con.execute("""
+        CREATE TEMP TABLE dup_groups AS
+        SELECT drive_id, date, count(*) AS n_rows,
+               min(rec_sig) <> max(rec_sig) AS conflicting,
+               max(failure) AS any_failure
+        FROM obs_all WHERE day_rows > 1 GROUP BY drive_id, date
+    """)
+    con.execute("""
+        CREATE TEMP VIEW obs AS
+        SELECT a.* EXCLUDE (rn, day_rows, rec_sig),
+               CAST(coalesce(g.conflicting, FALSE) AS INTEGER) AS dup_conflict
+        FROM obs_all a LEFT JOIN dup_groups g USING (drive_id, date)
+        WHERE a.rn = 1
+    """)
+    dup_rows = con.execute("SELECT coalesce(sum(n_rows - 1), 0) FROM dup_groups").fetchone()[0]
 
     print("[3/5] Past-only features, labels and splits ...", flush=True)
     feats = feature_definitions()
@@ -156,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     con.execute(f"""
         CREATE TEMP TABLE feat AS
         SELECT drive_id, date, model, manufacturer_group, first_seen, last_seen, fail_date,
-               in_train, in_eval, train_weight, eval_weight,
+               in_train, in_eval, train_weight, eval_weight, dup_conflict,
                {feat_sql},
                CAST(({rule}) AS INTEGER) AS smart_rule_flag,
                {rule_score} AS smart_rule_score
@@ -181,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     feature_names = [n for n, _, _ in feats]
     cols = (["drive_id", "date", "model", "manufacturer_group", "split",
              "CASE WHEN split = 'train' THEN train_weight ELSE eval_weight END AS weight",
-             "fail_date AS eval_fail_date"] + feature_names + BASELINE_COLUMNS + LABEL_COLUMNS)
+             "fail_date AS eval_fail_date", "dup_conflict"] + feature_names + BASELINE_COLUMNS + LABEL_COLUMNS)
     files = {}
     for split in ("train", "valid", "test"):
         f = out / f"model_{split}.parquet"
@@ -211,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         SELECT count(*), count(fail_date), count(*) FILTER (WHERE failure_flags > 1),
                count(*) FILTER (WHERE fail_date IS NOT NULL AND last_seen > fail_date)
         FROM drives""").fetchone()
+    dup_audit = write_duplicate_audit(con, out, test_end)
     with open(out / "feature_dictionary.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["feature", "definition_sql", "description", "role"])
@@ -222,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
             w.writerow([f"label_{h}d", "see module docstring", f"First failure within {h} days after t", "target"])
         w.writerow(["weight", "1/sampling rate", "Inverse-probability sampling weight of the drive", "weight"])
         w.writerow(["eval_fail_date", "first failure date", "For evaluation/simulation ONLY", "never_a_feature"])
+        w.writerow(["dup_conflict", "1 if the drive-day had duplicate rows that differ",
+                    "For sensitivity analysis ONLY", "never_a_feature"])
 
     manifest = {
         "phase": "3 - labels, features, splits",
@@ -235,10 +299,12 @@ def main(argv: list[str] | None = None) -> int:
                                  "drives_with_multiple_failure_flags": fleet[2],
                                  "drives_observed_after_first_failure": fleet[3]},
         "duplicate_drive_day_rows_collapsed": dup_rows,
+        "duplicates": dup_audit,
         "feature_columns": feature_names,
         "baseline_columns": BASELINE_COLUMNS,
         "label_columns": LABEL_COLUMNS,
-        "never_use_as_features": ["drive_id", "date", "split", "weight", "eval_fail_date", "model"] + LABEL_COLUMNS,
+        "never_use_as_features": ["drive_id", "date", "split", "weight", "eval_fail_date", "model",
+                                  "dup_conflict"] + LABEL_COLUMNS,
         "split_stats": stats,
         "files": files,
         "runtime_seconds": round(time.time() - t0, 1),

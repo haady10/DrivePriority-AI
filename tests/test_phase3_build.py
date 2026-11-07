@@ -178,3 +178,57 @@ def test_model_spacing_does_not_split_a_drive_and_bad_capacity_is_null(tmp_path)
                                "--temp-dir", str(tmp_path / "tmp2")]) == 0
     tr2 = pq.read_table(out2 / "model_train.parquet").to_pandas()
     assert tr2.capacity_tb.isna().all()                    # -1 never becomes a negative capacity
+
+
+def test_duplicate_rule_audit_and_determinism(tmp_path):
+    """Exact vs conflicting duplicate days: fixed keep rule, flag, audit files, same result on rerun."""
+    rows = []
+    d = date(2020, 1, 1)
+    while d <= date(2020, 3, 31):
+        rows.append(dict(date=d, serial="B", model="ST4000DM000", failure=0, s5=0))
+        if d <= date(2020, 2, 20):
+            rows.append(dict(date=d, serial="A", model="ST4000DM000", failure=int(d == date(2020, 2, 20)), s5=1))
+        d += timedelta(days=1)
+    rows.append(dict(date=date(2020, 1, 10), serial="B", model="ST4000DM000", failure=0, s5=0))    # exact copy
+    rows.append(dict(date=date(2020, 1, 12), serial="B", model="ST4000DM000", failure=0, s5=7))    # conflict
+    rows.append(dict(date=date(2020, 1, 14), serial="B", model="ST4000DM000", failure=0, s5=None))  # less complete
+    rows.append(dict(date=date(2020, 2, 20), serial="A", model="ST4000DM000", failure=0, s5=9))    # failure-day conflict
+
+    def run(tag):
+        snap = tmp_path / f"snap_{tag}"
+        _write_snapshot(snap, rows)
+        out = tmp_path / f"out_{tag}"
+        assert build_dataset.main(["--snapshot", str(snap), "--out", str(out), "--train-end", "2020-02-29",
+                                   "--valid-end", "2020-03-15", "--test-end", "2020-03-31", "--train-rate", "1.0",
+                                   "--eval-rate", "1.0", "--memory-limit", "1GB",
+                                   "--temp-dir", str(tmp_path / f"t{tag}")]) == 0
+        return out
+
+    out = run("1")
+    man = json.loads((out / "phase3_manifest.json").read_text())
+    dup = man["duplicates"]
+    assert man["duplicate_drive_day_rows_collapsed"] == 4
+    assert dup["duplicate_groups"] == 4 and dup["exact_groups"] == 1 and dup["conflicting_groups"] == 3
+    assert dup["conflicting_groups_involving_failure"] == 1
+    assert "smart_5_raw" in dup["conflicting_groups_by_differing_column"]
+    assert "dup_conflict" in man["never_use_as_features"] and "dup_conflict" not in man["feature_columns"]
+
+    tr = pq.read_table(out / "model_train.parquet").to_pandas()
+    b = lambda day: tr[(tr.drive_id.str.startswith("B|")) & (tr.date == day)].iloc[0]
+    assert b(date(2020, 1, 10)).dup_conflict == 0 and b(date(2020, 1, 10)).smart_5_raw == 0
+    assert b(date(2020, 1, 12)).dup_conflict == 1
+    assert b(date(2020, 1, 14)).dup_conflict == 1 and b(date(2020, 1, 14)).smart_5_raw == 0  # complete row kept
+    assert b(date(2020, 1, 15)).dup_conflict == 0
+    # the failure date still comes from the failure=1 row, so the labels are intact
+    a = tr[tr.drive_id.str.startswith("A|")]
+    assert a[a.date >= date(2020, 2, 20)].empty
+    assert (a[a.date == date(2020, 2, 13)].label_7d == 1).all()
+
+    conf = pq.read_table(out / "duplicate_conflicts.parquet").to_pandas()
+    assert len(conf) == 6 and conf["kept"].sum() == 3        # all original rows of the 3 conflicting days
+    assert (out / "duplicate_audit.csv").exists()
+
+    out2 = run("2")      # same input, same output
+    tr2 = pq.read_table(out2 / "model_train.parquet").to_pandas()
+    import pandas as pd
+    pd.testing.assert_frame_equal(tr.reset_index(drop=True), tr2.reset_index(drop=True))
