@@ -91,7 +91,11 @@ def evaluate(y, score, *, is_probability: bool, rule_flag_count: int | None = No
         out[f"precision_top_{frac * 100:g}pct"] = prec
         out[f"tied_at_cut_top_{frac * 100:g}pct"] = top_k_hits(y, s, k)[1] if n else 0
     if rule_flag_count is not None and n:
-        rec, prec = recall_precision_at_k(y, s, max(int(rule_flag_count), 1))
+        if int(rule_flag_count) <= 0:
+            # Same volume as the rule means inspecting nothing: nothing is caught, precision undefined.
+            rec, prec = (0.0 if pos else math.nan), math.nan
+        else:
+            rec, prec = recall_precision_at_k(y, s, int(rule_flag_count))
         out["recall_at_smart_volume"] = rec
         out["precision_at_smart_volume"] = prec
         out["alert_volume"] = int(rule_flag_count)

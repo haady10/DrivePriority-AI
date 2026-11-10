@@ -26,6 +26,11 @@ Rules that keep the result honest:
   - GBM leaf values are capped (max_abs_leafnode_pred) so scores do not pile up at exactly 0 or 1.
   - smart_rule_flag NULL (no counter above 0, some not reported) is read as 0, never left empty.
   - top-K metrics share ties fairly, and checks.json reports score health and ties.
+* v5 (after two more reviews): the input must be the HDD-only cohort (manifest `cohort` section);
+  observation gaps inside label windows are counted (gap audit) and --strict-negatives can turn
+  incompletely observed healthy windows into unknown for a sensitivity run; models are saved by default;
+  H2O is shut down even after an error; effective predictors per model are recorded; the
+  SMART indicator count (0-5 counters above 0, rule R21) is a second baseline.
 
 Usage (Windows, from the repo root; Java and H2O must work, see tests/test_h2o_setup.py):
   $env:PYTHONPATH = "src"
@@ -48,6 +53,7 @@ import pandas as pd
 
 import duckdb
 
+from drivepriority.features.common import SMART_RULE_ATTRS
 from drivepriority.models.metrics import calibration_table, evaluate, rule_metrics, score_health
 
 HORIZONS = (7, 14, 30)
@@ -94,46 +100,80 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def effective_neg_keep(neg_keep: float) -> tuple[int, float]:
+    """Thinning keeps rows whose hash bucket (0..9999) is below `bucket`; the rate actually applied
+    is bucket/10000, and that exact rate is what the weights must undo."""
+    bucket = int(round(neg_keep * 10000))
+    if bucket <= 0:
+        raise SystemExit(f"--neg-keep {neg_keep} rounds to zero kept rows (resolution is 1/10000); stopping")
+    return bucket, bucket / 10000
+
+
 def prepare_files(data: Path, out: Path, horizon: int, features: list[str], neg_keep: float,
-                  duckdb_memory: str, threads: int | None) -> dict:
-    """Write the compact files H2O reads (features cast to DOUBLE) plus the metadata of valid/test."""
+                  duckdb_memory: str, threads: int | None, strict_negatives: bool = False) -> dict:
+    """Write the compact files H2O reads (features cast to DOUBLE) plus the metadata of valid/test.
+
+    Gap audit: for every row, fwd_obs = number of observed days in (t, t+H]. A healthy label (0) needs
+    only that the drive is seen again on or after t+H without a failure flag (reappearance proves
+    survival); fwd_obs < H means some days inside the window were not observed. These rows are counted.
+    With strict_negatives they become unknown (NULL) instead, as a sensitivity analysis.
+    """
     import duckdb
 
-    label = f"label_{horizon}d"
+    raw_label = f"label_{horizon}d"
+    label = "lab"
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{duckdb_memory}'")
     con.execute(f"SET temp_directory='{(out / '_duckdb_tmp').as_posix()}'")
     if threads:
         con.execute(f"SET threads={int(threads)}")
     feat_sql = ", ".join(f'CAST("{c}" AS DOUBLE) AS "{c}"' for c in features)
+    rule_count = " + ".join(f"CAST(coalesce(smart_{x}_raw > 0, FALSE) AS INTEGER)" for x in SMART_RULE_ATTRS)
     counts: dict = {}
+    lab_sql = (f"CASE WHEN {raw_label} = 0 AND fwd_obs < {horizon} THEN NULL ELSE {raw_label} END"
+               if strict_negatives else raw_label)
+    for split in ("train", "valid", "test"):
+        con.execute(f"""
+            CREATE TEMP VIEW s_{split}_w AS
+            SELECT *, count(*) OVER (PARTITION BY drive_id ORDER BY date
+                       RANGE BETWEEN INTERVAL 1 DAY FOLLOWING AND INTERVAL {horizon} DAY FOLLOWING) AS fwd_obs
+            FROM read_parquet('{(data / f"model_{split}.parquet").as_posix()}')""")
+        con.execute(f"CREATE TEMP TABLE s_{split} AS SELECT *, {lab_sql} AS lab FROM s_{split}_w")
+        g = con.execute(f"""SELECT count(*) FILTER (WHERE {raw_label} = 0),
+                                   count(*) FILTER (WHERE {raw_label} = 0 AND fwd_obs < {horizon}),
+                                   count(*) FILTER (WHERE eval_fail_date IS NOT NULL AND eval_fail_date <= date)
+                            FROM s_{split}""").fetchone()
+        counts.setdefault(split, {})
+        counts[split]["gap_audit"] = {"healthy_rows": g[0], "healthy_rows_with_unobserved_days_in_window": g[1],
+                                      "share": (g[1] / g[0]) if g[0] else 0.0,
+                                      "strict_negatives_applied": bool(strict_negatives)}
+        counts[split]["rows_at_or_after_failure"] = g[2]
 
-    train_src = (data / "model_train.parquet").as_posix()
+    train_src = "s_train"
     keep = ""
     if neg_keep < 1.0:
-        bucket = int(round(neg_keep * 10000))
+        bucket, neg_keep = effective_neg_keep(neg_keep)
         # md5 is fixed by its standard, unlike DuckDB's hash(), so the same rows are kept on any version.
         keep = (f" AND ({label} = 1 OR (md5_number(drive_id || '|' || CAST(date AS VARCHAR)) % 10000)"
                 f" < {bucket})")
     w_sql = f"CASE WHEN {label} = 0 THEN CAST(weight AS DOUBLE) / {neg_keep} ELSE CAST(weight AS DOUBLE) END"
     con.execute(f"""
         COPY (SELECT {feat_sql}, CAST({label} AS INTEGER) AS y, {w_sql} AS w
-              FROM read_parquet('{train_src}') WHERE {label} IS NOT NULL{keep})
+              FROM {train_src} WHERE {label} IS NOT NULL{keep})
         TO '{(out / 'h2o_train.parquet').as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
     r = con.execute(f"""SELECT count(*), count(*) FILTER (WHERE {label} = 1), count(*) FILTER (WHERE {label} IS NULL),
-                               min(date), max(date) FROM read_parquet('{train_src}')""").fetchone()
+                               min(date), max(date) FROM {train_src}""").fetchone()
     kept = con.execute(f"SELECT count(*), sum(y) FROM read_parquet('{(out / 'h2o_train.parquet').as_posix()}')").fetchone()
-    counts["train"] = {"rows_in_file": r[0], "positives_in_file": r[1], "unknown_label_rows_dropped": r[2],
-                       "first_date": str(r[3]), "last_date": str(r[4]), "rows_used": kept[0],
-                       "positives_used": int(kept[1] or 0), "neg_keep": neg_keep}
+    counts["train"].update({"rows_in_file": r[0], "positives_in_file": r[1], "unknown_label_rows_dropped": r[2],
+                            "first_date": str(r[3]), "last_date": str(r[4]), "rows_used": kept[0],
+                            "positives_used": int(kept[1] or 0), "neg_keep": neg_keep})
 
     for split in ("valid", "test"):
-        src = (data / f"model_{split}.parquet").as_posix()
         # ALL rows get a row_id: unknown-label rows stay (they are scored, not evaluated).
         con.execute(f"""
             CREATE TEMP TABLE t_{split} AS
             SELECT row_number() OVER (ORDER BY date, drive_id) AS row_id, *
-            FROM read_parquet('{src}')""")
+            FROM s_{split}""")
         # Labelled rows only: H2O validation frame (early stopping / lambda choice).
         con.execute(f"""
             COPY (SELECT row_id, {feat_sql}, CAST({label} AS INTEGER) AS y, CAST(weight AS DOUBLE) AS w
@@ -148,7 +188,8 @@ def prepare_files(data: Path, out: Path, horizon: int, features: list[str], neg_
                          CAST(weight AS DOUBLE) AS w,
                          -- NULL only when no counter is above 0 and some are not reported: that is "no alert".
                          CAST(coalesce(smart_rule_flag, 0) AS INTEGER) AS smart_rule_flag,
-                         CAST(smart_rule_score AS DOUBLE) AS smart_rule_score
+                         CAST(smart_rule_score AS DOUBLE) AS smart_rule_score,
+                         CAST({rule_count} AS INTEGER) AS smart_rule_count
                   FROM t_{split} ORDER BY row_id)
             TO '{(out / f'meta_{split}.parquet').as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
         r = con.execute(f"""SELECT count(*), count(y), count(*) FILTER (WHERE y = 1), min(date), max(date),
@@ -156,12 +197,12 @@ def prepare_files(data: Path, out: Path, horizon: int, features: list[str], neg_
                                    count(*) FILTER (WHERE (smart_rule_flag > 0) <> (smart_rule_score > 0))
                             FROM read_parquet('{(out / f'meta_{split}.parquet').as_posix()}')""").fetchone()
         null_flags = con.execute(f"SELECT count(*) FILTER (WHERE smart_rule_flag IS NULL) FROM t_{split}").fetchone()[0]
-        counts[split] = {"rows_scored": r[0], "rows_used": r[1], "positives_used": r[2],
-                         "first_date": str(r[3]), "last_date": str(r[4]),
-                         "rows_at_or_after_failure": r[5], "unknown_label_rows_dropped": 0,
-                         "unknown_label_rows_scored_not_evaluated": r[0] - r[1],
-                         "smart_rule_flag_null_read_as_0": null_flags,
-                         "smart_rule_flag_vs_score_mismatch": r[6]}
+        counts[split].update({"rows_scored": r[0], "rows_used": r[1], "positives_used": r[2],
+                              "first_date": str(r[3]), "last_date": str(r[4]),
+                              "rows_at_or_after_failure": r[5], "unknown_label_rows_dropped": 0,
+                              "unknown_label_rows_scored_not_evaluated": r[0] - r[1],
+                              "smart_rule_flag_null_read_as_0": null_flags,
+                              "smart_rule_flag_vs_score_mismatch": r[6]})
     con.close()
     return counts
 
@@ -242,7 +283,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gbm-trees", type=int, default=200)
     p.add_argument("--drf-trees", type=int, default=100)
     p.add_argument("--drf-depth", type=int, default=12)
-    p.add_argument("--save-models", action="store_true", help="also save the binary H2O models")
+    p.add_argument("--save-models", action="store_true", help="(kept for old commands) models are saved by default")
+    p.add_argument("--no-save-models", action="store_true", help="do not save the binary H2O models")
+    p.add_argument("--strict-negatives", action="store_true",
+                   help="sensitivity run: healthy rows with unobserved days in the label window become unknown")
     a = p.parse_args(argv)
     import socket
     for q in (a.port, a.port + 1):
@@ -253,6 +297,9 @@ def main(argv: list[str] | None = None) -> int:
                                  f"share one H2O cluster. Choose another one, e.g. --port {a.port + 100}.")
     if not 0 < a.neg_keep <= 1:
         raise SystemExit("--neg-keep must be in (0, 1]")
+    effective_neg_keep(a.neg_keep)
+    if a.strict_negatives and not a.not_protocol:
+        raise SystemExit("--strict-negatives is a sensitivity run; add --not-protocol and use a separate --out")
     if a.neg_keep != PROTOCOL_NEG_KEEP and not a.not_protocol:
         raise SystemExit(f"--neg-keep {a.neg_keep} differs from the protocol value {PROTOCOL_NEG_KEEP} "
                          f"(all horizons must use the same value). Use --not-protocol only for practice runs.")
@@ -275,13 +322,17 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Forbidden columns in the feature list, stopping: {sorted(bad)}")
     if not features:
         raise SystemExit("No features left to train on")
+    cohort = manifest.get("cohort") or {}
+    if cohort.get("name") != "HDD-only" and not a.not_protocol:
+        raise SystemExit("phase3_manifest.json has no HDD-only cohort section: use the 03_Phase3_FINAL_HDD "
+                         "folder (made by hdd_filter). Other inputs need --not-protocol.")
     for split in ("train", "valid", "test"):
         if not (data / f"model_{split}.parquet").is_file():
             raise SystemExit(f"Missing {data / f'model_{split}.parquet'}")
 
     print("[1/6] Preparing files (features as DOUBLE; unknown labels: not trained on, scored later) ...", flush=True)
     counts = prepare_files(data, out, a.horizon, features, a.neg_keep, a.duckdb_memory,
-                           None if a.nthreads < 1 else a.nthreads)
+                           None if a.nthreads < 1 else a.nthreads, strict_negatives=a.strict_negatives)
     for split, c in counts.items():
         unk = (f"{c['unknown_label_rows_dropped']:,} unknown-label rows dropped" if split == "train"
                else f"{c['unknown_label_rows_scored_not_evaluated']:,} unknown-label rows scored, not evaluated")
@@ -297,7 +348,12 @@ def main(argv: list[str] | None = None) -> int:
         if last > hi or (lo is not None and first <= lo):
             raise SystemExit(f"{split} has dates {first}..{last} outside its range "
                              f"({'start' if lo is None else '> ' + lo}..{hi}); stopping")
-    for split in ("valid", "test"):
+    for split, c in counts.items():
+        ga = c["gap_audit"]
+        print(f"  {split}: gap audit: {ga['healthy_rows_with_unobserved_days_in_window']:,} of "
+              f"{ga['healthy_rows']:,} healthy rows ({100 * ga['share']:.2f}%) have unobserved days in the "
+              f"{a.horizon}-day window" + (" -> set to unknown (strict)" if a.strict_negatives else ""), flush=True)
+    for split in ("train", "valid", "test"):
         if counts[split]["rows_at_or_after_failure"]:
             raise SystemExit(f"{split} has rows on or after the failure day; stopping")
     if counts["train"]["positives_used"] == 0 or counts["valid"]["positives_used"] == 0:
@@ -305,168 +361,192 @@ def main(argv: list[str] | None = None) -> int:
 
     import h2o
     print("[2/6] Starting H2O ...", flush=True)
-    h2o.init(port=a.port, max_mem_size=a.max_mem_size, nthreads=a.nthreads)
-    h2o.no_progress()
-    frames = {}
-    for split in ("train", "valid"):
-        fr = h2o.import_file((out / f"h2o_{split}.parquet").as_posix())
-        fr["y"] = fr["y"].asfactor()
-        frames[split] = fr
-    if sorted(frames["train"]["y"].levels()[0]) != ["0", "1"]:
-        raise SystemExit("Training label does not have both classes")
+    try:
+        h2o.init(port=a.port, max_mem_size=a.max_mem_size, nthreads=a.nthreads)
+        h2o.no_progress()
+        frames = {}
+        for split in ("train", "valid"):
+            fr = h2o.import_file((out / f"h2o_{split}.parquet").as_posix())
+            fr["y"] = fr["y"].asfactor()
+            frames[split] = fr
+        if sorted(frames["train"]["y"].levels()[0]) != ["0", "1"]:
+            raise SystemExit("Training label does not have both classes")
 
-    print("[3/6] Training models ...", flush=True)
-    models = build_models(names, a)
-    trained, timings = {}, {}
-    for name, model in models.items():
-        t1 = time.time()
-        model.train(x=features, y="y", training_frame=frames["train"], validation_frame=frames["valid"],
-                    weights_column="w")
-        timings[name] = round(time.time() - t1, 1)
-        trained[name] = model
-        print(f"  {name}: {timings[name]} s", flush=True)
-        if a.save_models:
-            h2o.save_model(model, path=(out / "models").as_posix(), force=True)
+        print("[3/6] Training models ...", flush=True)
+        models = build_models(names, a)
+        trained, timings, saved, effective = {}, {}, {}, {}
+        for name, model in models.items():
+            t1 = time.time()
+            model.train(x=features, y="y", training_frame=frames["train"], validation_frame=frames["valid"],
+                        weights_column="w")
+            timings[name] = round(time.time() - t1, 1)
+            trained[name] = model
+            print(f"  {name}: {timings[name]} s", flush=True)
+            if not a.no_save_models:
+                saved[name] = h2o.save_model(model, path=(out / "models").as_posix(), force=True)
+            try:  # columns H2O really used (it silently drops constant / all-missing columns)
+                used = [c for c in model._model_json["output"]["names"] if c not in ("y", "w")]
+            except Exception:
+                used = []
+            effective[name] = used
+            if used and set(used) != set(features):
+                print(f"  note: {name} dropped {len(set(features) - set(used))} column(s): "
+                      f"{sorted(set(features) - set(used))}", flush=True)
 
-    print("[4/6] Scoring validation and test ...", flush=True)
-    metas, score_rows = {}, {}
-    for split in ("valid", "test"):
-        metas[split] = pd.read_parquet(out / f"meta_{split}.parquet")
-        scoring = h2o.import_file((out / f"h2o_{split}_all.parquet").as_posix())  # every row, labelled or not
-        frame_parts = []
-        for name, model in trained.items():
-            pred = model.predict(scoring)
-            df = scoring[["row_id"]].cbind(pred["p1"]).as_data_frame(use_multi_thread=True)
-            df.columns = ["row_id", "score"]
-            df["model"] = name
-            frame_parts.append(df)
-        score_rows[split] = pd.concat(frame_parts, ignore_index=True)
-        if len(trained):
+        print("[4/6] Scoring validation and test ...", flush=True)
+        metas, score_rows = {}, {}
+        for split in ("valid", "test"):
+            metas[split] = pd.read_parquet(out / f"meta_{split}.parquet")
+            scoring = h2o.import_file((out / f"h2o_{split}_all.parquet").as_posix())  # every row, labelled or not
+            frame_parts = []
+            for name, model in trained.items():
+                pred = model.predict(scoring)
+                df = scoring[["row_id"]].cbind(pred["p1"]).as_data_frame(use_multi_thread=True)
+                df.columns = ["row_id", "score"]
+                df["model"] = name
+                frame_parts.append(df)
+            score_rows[split] = pd.concat(frame_parts, ignore_index=True)
+            if len(trained):
+                for name in trained:
+                    got = score_rows[split][score_rows[split]["model"] == name]
+                    if len(got) != len(metas[split]) or not np.array_equal(
+                            np.sort(got["row_id"].to_numpy()), metas[split]["row_id"].to_numpy()):
+                        raise SystemExit(f"Scores of {name} on {split} do not line up with the rows; stopping")
+
+        print("[5/6] Metrics ...", flush=True)
+        metric_rows, rule_rows, calib = [], [], []
+        for split in ("valid", "test"):
+            # Metrics use only rows whose outcome is known; unknown-label rows are scored but not evaluated.
+            meta = metas[split]
+            meta = meta[meta["y"].notna()].copy()
+            meta["y"] = meta["y"].astype(int)
+            flag_count = int((meta["smart_rule_flag"] > 0).sum())
+            rm = rule_metrics(meta["y"], meta["smart_rule_flag"])
+            rule_rows.append({"horizon": a.horizon, "split": split, **rm})
+            base = evaluate(meta["y"], meta["smart_rule_score"], is_probability=False, rule_flag_count=flag_count)
+            metric_rows.append({"horizon": a.horizon, "split": split, "model": "smart_rule_score", **base})
+            # R21: number of the five rule counters above 0 (0-5), the indicator-count baseline.
+            cnt = evaluate(meta["y"], meta["smart_rule_count"], is_probability=False, rule_flag_count=flag_count)
+            metric_rows.append({"horizon": a.horizon, "split": split, "model": "smart_rule_count", **cnt})
             for name in trained:
-                got = score_rows[split][score_rows[split]["model"] == name]
-                if len(got) != len(metas[split]) or not np.array_equal(
-                        np.sort(got["row_id"].to_numpy()), metas[split]["row_id"].to_numpy()):
-                    raise SystemExit(f"Scores of {name} on {split} do not line up with the rows; stopping")
+                sc = score_rows[split][score_rows[split]["model"] == name].sort_values("row_id")
+                sc = sc.set_index("row_id").loc[meta["row_id"]]
+                metric_rows.append({"horizon": a.horizon, "split": split, "model": name,
+                                    **evaluate(meta["y"], sc["score"].to_numpy(), is_probability=True,
+                                               rule_flag_count=flag_count)})
+                ct = calibration_table(meta["y"], sc["score"].to_numpy())
+                ct.insert(0, "model", name)
+                ct.insert(0, "split", split)
+                ct.insert(0, "horizon", a.horizon)
+                calib.append(ct)
+        metrics = pd.DataFrame(metric_rows)
+        metrics.to_csv(out / "metrics.csv", index=False)
+        pd.DataFrame(rule_rows).to_csv(out / "rule_baseline.csv", index=False)
+        if calib:
+            pd.concat(calib, ignore_index=True).to_csv(out / "calibration.csv", index=False)
 
-    print("[5/6] Metrics ...", flush=True)
-    metric_rows, rule_rows, calib = [], [], []
-    for split in ("valid", "test"):
-        # Metrics use only rows whose outcome is known; unknown-label rows are scored but not evaluated.
-        meta = metas[split]
-        meta = meta[meta["y"].notna()].copy()
-        meta["y"] = meta["y"].astype(int)
-        flag_count = int((meta["smart_rule_flag"] > 0).sum())
-        rm = rule_metrics(meta["y"], meta["smart_rule_flag"])
-        rule_rows.append({"horizon": a.horizon, "split": split, **rm})
-        base = evaluate(meta["y"], meta["smart_rule_score"], is_probability=False, rule_flag_count=flag_count)
-        metric_rows.append({"horizon": a.horizon, "split": split, "model": "smart_rule_score", **base})
-        for name in trained:
-            sc = score_rows[split][score_rows[split]["model"] == name].sort_values("row_id")
-            sc = sc.set_index("row_id").loc[meta["row_id"]]
-            metric_rows.append({"horizon": a.horizon, "split": split, "model": name,
-                                **evaluate(meta["y"], sc["score"].to_numpy(), is_probability=True,
-                                           rule_flag_count=flag_count)})
-            ct = calibration_table(meta["y"], sc["score"].to_numpy())
-            ct.insert(0, "model", name)
-            ct.insert(0, "split", split)
-            ct.insert(0, "horizon", a.horizon)
-            calib.append(ct)
-    metrics = pd.DataFrame(metric_rows)
-    metrics.to_csv(out / "metrics.csv", index=False)
-    pd.DataFrame(rule_rows).to_csv(out / "rule_baseline.csv", index=False)
-    if calib:
-        pd.concat(calib, ignore_index=True).to_csv(out / "calibration.csv", index=False)
+        print("[6/6] Saving scores, importance and checks ...", flush=True)
+        for split in ("valid", "test"):
+            merged = score_rows[split].merge(metas[split], on="row_id", how="left")
+            merged["horizon"] = a.horizon
+            merged["y"] = merged["y"].astype("Int64")  # empty = outcome unknown (kept as a competitor in the replay)
+            merged["label_known"] = merged["y"].notna()
+            merged = merged[["horizon", "model", "row_id", "drive_id", "date", "eval_fail_date", "y", "label_known",
+                             "w", "score", "smart_rule_flag", "smart_rule_score", "smart_rule_count"]].rename(
+                columns={"y": "label", "w": "weight"})
+            merged.sort_values(["model", "date", "drive_id"]).to_parquet(out / f"scores_{split}.parquet", index=False)
+        for name, model in trained.items():
+            try:
+                if name in ("gbm", "drf"):
+                    model.varimp(use_pandas=True).to_csv(out / f"importance_{name}.csv", index=False)
+                else:
+                    coef = model.coef()
+                    pd.DataFrame({"feature": list(coef), "coefficient": list(coef.values())}).to_csv(
+                        out / f"importance_{name}.csv", index=False)
+            except Exception as exc:  # importance is a convenience, never fatal
+                print(f"  note: no importance for {name}: {exc}", flush=True)
 
-    print("[6/6] Saving scores, importance and checks ...", flush=True)
-    for split in ("valid", "test"):
-        merged = score_rows[split].merge(metas[split], on="row_id", how="left")
-        merged["horizon"] = a.horizon
-        merged["y"] = merged["y"].astype("Int64")  # empty = outcome unknown (kept as a competitor in the replay)
-        merged["label_known"] = merged["y"].notna()
-        merged = merged[["horizon", "model", "row_id", "drive_id", "date", "eval_fail_date", "y", "label_known",
-                         "w", "score", "smart_rule_flag", "smart_rule_score"]].rename(
-            columns={"y": "label", "w": "weight"})
-        merged.sort_values(["model", "date", "drive_id"]).to_parquet(out / f"scores_{split}.parquet", index=False)
-    for name, model in trained.items():
+        warnings = []
+        for _, row in metrics[~metrics["model"].str.startswith("smart_rule")].iterrows():
+            if row["roc_auc"] == row["roc_auc"] and row["roc_auc"] > 0.999:
+                warnings.append(f"{row['model']}: {row['split']} AUC {row['roc_auc']:.4f} is suspiciously high, "
+                                f"check for leakage")
+            if row["average_precision"] == row["average_precision"] and row["average_precision"] > 0.95:
+                warnings.append(f"{row['model']}: {row['split']} AP {row['average_precision']:.4f} is suspiciously "
+                                f"high, check for leakage")
+        # One feature alone should never separate the classes almost perfectly (validation, labelled rows).
+        single = single_feature_auc(data / "model_valid.parquet", features,
+                                    f"label_{a.horizon}d")
+        for f, v in single.items():
+            if v > 0.99:
+                warnings.append(f"feature {f} alone has validation AUC {v:.4f}; check it for leakage")
+        health = {}
+        for split in ("valid", "test"):
+            for name in trained:
+                sc = score_rows[split][score_rows[split]["model"] == name]["score"].to_numpy()
+                h = score_health(sc)
+                health[f"{split}/{name}"] = h
+                if h["rows"] and (h["rows_at_or_above_0.999999"] + h["rows_at_or_below_1e-12"]) > SATURATION_WARN_SHARE * h["rows"]:
+                    warnings.append(f"{name}: {split} has many scores saturated at 0 or 1 (ranking is lost there)")
+        for _, row in metrics[~metrics["model"].str.startswith("smart_rule")].iterrows():
+            k = max(1, int(np.ceil(0.01 * row["rows"])))
+            if row["tied_at_cut_top_1pct"] > TIE_AT_CUT_WARN * k:
+                warnings.append(f"{row['model']}: {row['split']} has {int(row['tied_at_cut_top_1pct']):,} rows tied at the "
+                                f"top-1% cut (K={k:,}); ranking there is a shared tie")
+        checks = {
+            "features_used": len(features),
+            "forbidden_features_present": [],
+            "rows_at_or_after_failure": {s: counts[s].get("rows_at_or_after_failure", 0) for s in ("valid", "test")},
+            "unknown_labels_dropped": {s: counts[s]["unknown_label_rows_dropped"] for s in counts},
+            "unknown_labels_scored_not_evaluated": {s: counts[s]["unknown_label_rows_scored_not_evaluated"]
+                                                    for s in ("valid", "test")},
+            "rows_scored": {s: counts[s]["rows_scored"] for s in ("valid", "test")},
+            "date_ranges": {s: [counts[s]["first_date"], counts[s]["last_date"]] for s in counts},
+            "date_ranges_inside_manifest_splits": True,
+            "excluded_features": excluded,
+            "smart_rule_flag_null_read_as_0": {s: counts[s]["smart_rule_flag_null_read_as_0"] for s in ("valid", "test")},
+            "smart_rule_flag_vs_score_mismatch": {s: counts[s]["smart_rule_flag_vs_score_mismatch"] for s in ("valid", "test")},
+            "best_single_feature_valid_auc": dict(sorted(single.items(), key=lambda kv: -kv[1])[:5]),
+            "score_health": health,
+            "gap_audit": {s: counts[s]["gap_audit"] for s in counts},
+            "rows_at_or_after_failure_train": counts["train"]["rows_at_or_after_failure"],
+            "h2o_dropped_columns": {m: sorted(set(features) - set(u)) for m, u in effective.items() if u},
+            "warnings": warnings,
+        }
+        (out / "checks.json").write_text(json.dumps(checks, indent=2), encoding="utf-8")
+        info = {
+            "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "horizon_days": a.horizon, "models": names, "seed": a.seed, "neg_keep": a.neg_keep,
+            "protocol_run": (a.neg_keep == PROTOCOL_NEG_KEEP) and not a.not_protocol,
+            "kit_version": "v5", "strict_negatives": a.strict_negatives,
+            "effective_neg_keep": counts["train"]["neg_keep"],
+            "cohort": manifest.get("cohort", {}).get("name"),
+            "cohort_registry_sha256": manifest.get("cohort", {}).get("registry_sha256"),
+            "effective_predictors": effective, "saved_models": saved,
+            "features_used": features, "excluded_features": excluded,
+            "params": {"gbm_trees": a.gbm_trees, "gbm_max_depth": 6, "gbm_learn_rate": 0.1,
+                       "gbm_max_abs_leafnode_pred": GBM_MAX_ABS_LEAF, "drf_trees": a.drf_trees,
+                       "drf_depth": a.drf_depth, "min_rows": 50},
+            "resources": {"max_mem_size": a.max_mem_size, "nthreads": a.nthreads, "port": a.port,
+                          "duckdb_memory": a.duckdb_memory, "cpu_count": os.cpu_count()},
+            "train_seconds": timings, "total_seconds": round(time.time() - t0, 1),
+            "data_dir": str(data),
+            "data_sha256": {f"model_{s}.parquet": _sha256(data / f"model_{s}.parquet") for s in ("train", "valid", "test")},
+            "phase3_manifest_sha256": _sha256(data / "phase3_manifest.json"),
+            "phase3_splits": manifest.get("splits"), "counts": counts,
+            "python": sys.version.split()[0], "h2o": h2o.__version__, "pandas": pd.__version__,
+            "duckdb": duckdb.__version__, "numpy": np.__version__, "java": _java_version(),
+            "code_sha256": {f: _sha256(Path(__file__).resolve().parent / f) for f in ("train_h2o.py", "metrics.py")},
+            "git_commit": _git_commit(),
+            "machine": platform.node(), "os": platform.platform(),
+        }
+        (out / "run_info.json").write_text(json.dumps(info, indent=2, default=str), encoding="utf-8")
+    finally:
+        # Shut down only our own cluster, also after an error, so the next run is not blocked.
         try:
-            if name in ("gbm", "drf"):
-                model.varimp(use_pandas=True).to_csv(out / f"importance_{name}.csv", index=False)
-            else:
-                coef = model.coef()
-                pd.DataFrame({"feature": list(coef), "coefficient": list(coef.values())}).to_csv(
-                    out / f"importance_{name}.csv", index=False)
-        except Exception as exc:  # importance is a convenience, never fatal
-            print(f"  note: no importance for {name}: {exc}", flush=True)
-
-    warnings = []
-    for _, row in metrics[metrics["model"] != "smart_rule_score"].iterrows():
-        if row["roc_auc"] == row["roc_auc"] and row["roc_auc"] > 0.999:
-            warnings.append(f"{row['model']}: {row['split']} AUC {row['roc_auc']:.4f} is suspiciously high, "
-                            f"check for leakage")
-        if row["average_precision"] == row["average_precision"] and row["average_precision"] > 0.95:
-            warnings.append(f"{row['model']}: {row['split']} AP {row['average_precision']:.4f} is suspiciously "
-                            f"high, check for leakage")
-    # One feature alone should never separate the classes almost perfectly (validation, labelled rows).
-    single = single_feature_auc(data / "model_valid.parquet", features,
-                                f"label_{a.horizon}d")
-    for f, v in single.items():
-        if v > 0.99:
-            warnings.append(f"feature {f} alone has validation AUC {v:.4f}; check it for leakage")
-    health = {}
-    for split in ("valid", "test"):
-        for name in trained:
-            sc = score_rows[split][score_rows[split]["model"] == name]["score"].to_numpy()
-            h = score_health(sc)
-            health[f"{split}/{name}"] = h
-            if h["rows"] and (h["rows_at_or_above_0.999999"] + h["rows_at_or_below_1e-12"]) > SATURATION_WARN_SHARE * h["rows"]:
-                warnings.append(f"{name}: {split} has many scores saturated at 0 or 1 (ranking is lost there)")
-    for _, row in metrics[metrics["model"] != "smart_rule_score"].iterrows():
-        k = max(1, int(np.ceil(0.01 * row["rows"])))
-        if row["tied_at_cut_top_1pct"] > TIE_AT_CUT_WARN * k:
-            warnings.append(f"{row['model']}: {row['split']} has {int(row['tied_at_cut_top_1pct']):,} rows tied at the "
-                            f"top-1% cut (K={k:,}); ranking there is a shared tie")
-    checks = {
-        "features_used": len(features),
-        "forbidden_features_present": [],
-        "rows_at_or_after_failure": {s: counts[s].get("rows_at_or_after_failure", 0) for s in ("valid", "test")},
-        "unknown_labels_dropped": {s: counts[s]["unknown_label_rows_dropped"] for s in counts},
-        "unknown_labels_scored_not_evaluated": {s: counts[s]["unknown_label_rows_scored_not_evaluated"]
-                                                for s in ("valid", "test")},
-        "rows_scored": {s: counts[s]["rows_scored"] for s in ("valid", "test")},
-        "date_ranges": {s: [counts[s]["first_date"], counts[s]["last_date"]] for s in counts},
-        "date_ranges_inside_manifest_splits": True,
-        "excluded_features": excluded,
-        "smart_rule_flag_null_read_as_0": {s: counts[s]["smart_rule_flag_null_read_as_0"] for s in ("valid", "test")},
-        "smart_rule_flag_vs_score_mismatch": {s: counts[s]["smart_rule_flag_vs_score_mismatch"] for s in ("valid", "test")},
-        "best_single_feature_valid_auc": dict(sorted(single.items(), key=lambda kv: -kv[1])[:5]),
-        "score_health": health,
-        "warnings": warnings,
-    }
-    (out / "checks.json").write_text(json.dumps(checks, indent=2), encoding="utf-8")
-    info = {
-        "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "horizon_days": a.horizon, "models": names, "seed": a.seed, "neg_keep": a.neg_keep,
-        "protocol_run": (a.neg_keep == PROTOCOL_NEG_KEEP) and not a.not_protocol,
-        "kit_version": "v4",
-        "features_used": features, "excluded_features": excluded,
-        "params": {"gbm_trees": a.gbm_trees, "gbm_max_depth": 6, "gbm_learn_rate": 0.1,
-                   "gbm_max_abs_leafnode_pred": GBM_MAX_ABS_LEAF, "drf_trees": a.drf_trees,
-                   "drf_depth": a.drf_depth, "min_rows": 50},
-        "resources": {"max_mem_size": a.max_mem_size, "nthreads": a.nthreads, "port": a.port,
-                      "duckdb_memory": a.duckdb_memory, "cpu_count": os.cpu_count()},
-        "train_seconds": timings, "total_seconds": round(time.time() - t0, 1),
-        "data_dir": str(data),
-        "data_sha256": {f"model_{s}.parquet": _sha256(data / f"model_{s}.parquet") for s in ("train", "valid", "test")},
-        "phase3_manifest_sha256": _sha256(data / "phase3_manifest.json"),
-        "phase3_splits": manifest.get("splits"), "counts": counts,
-        "python": sys.version.split()[0], "h2o": h2o.__version__, "pandas": pd.__version__,
-        "duckdb": duckdb.__version__, "numpy": np.__version__, "java": _java_version(),
-        "code_sha256": {f: _sha256(Path(__file__).resolve().parent / f) for f in ("train_h2o.py", "metrics.py")},
-        "git_commit": _git_commit(),
-        "machine": platform.node(), "os": platform.platform(),
-    }
-    (out / "run_info.json").write_text(json.dumps(info, indent=2, default=str), encoding="utf-8")
-    h2o.cluster().shutdown(prompt=False)
+            h2o.cluster().shutdown(prompt=False)
+        except Exception:
+            pass
     for tmp in ("h2o_train.parquet", "h2o_valid.parquet", "h2o_test.parquet",
                 "h2o_valid_all.parquet", "h2o_test_all.parquet"):
         (out / tmp).unlink(missing_ok=True)

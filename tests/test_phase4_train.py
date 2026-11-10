@@ -105,7 +105,7 @@ def test_train_h2o_end_to_end(tmp_path):
                          "--drf-trees", "10", "--drf-depth", "6", "--duckdb-memory", "1GB", "--port", "54611"])
     assert rc == 0
     m = pd.read_csv(out / "metrics.csv")
-    assert set(m["model"]) == {"lr", "glm", "gbm", "drf", "smart_rule_score"}
+    assert set(m["model"]) == {"lr", "glm", "gbm", "drf", "smart_rule_score", "smart_rule_count"}
     assert set(m["split"]) == {"valid", "test"}
     gbm = m[(m["model"] == "gbm") & (m["split"] == "valid")].iloc[0]
     assert gbm["roc_auc"] > 0.8  # the synthetic signal is easy: SMART counters rise before failure
@@ -137,7 +137,13 @@ def test_train_h2o_end_to_end(tmp_path):
     # (synthetic data is trivially separable, so other models may still warn; the GBM must not saturate)
     assert not any(w.startswith("gbm:") and "saturated" in w for w in checks["warnings"])
     assert sc["smart_rule_flag"].notna().all()
-    assert info["protocol_run"] is False and info["kit_version"] == "v4"
+    assert info["protocol_run"] is False and info["kit_version"] == "v5"
+    # v5: models saved by default, effective predictors recorded, gap audit, R21 count baseline.
+    assert set(info["saved_models"]) == {"lr", "glm", "gbm", "drf"}
+    assert all(os.path.exists(pth) for pth in info["saved_models"].values())
+    assert info["effective_predictors"]["gbm"] and set(info["effective_predictors"]["gbm"]) <= set(info["features_used"])
+    assert set(checks["gap_audit"]) == {"train", "valid", "test"}
+    assert "smart_rule_count" in set(m["model"]) and sc["smart_rule_count"].between(0, 5).all()
     for key in ("duckdb", "java", "code_sha256", "phase3_manifest_sha256", "resources", "git_commit"):
         assert key in info
 
@@ -243,11 +249,10 @@ def test_prepare_files_labels_weights_thinning_and_rule_flag(phase3_synth, tmp_p
     assert n_pos == n_pos_src                       # every positive is kept
     assert abs(w_neg / float(w_neg_src) - 1) < 0.03  # thinning weights restore the healthy total
     # Deterministic: a second run keeps exactly the same rows.
-    a = con.execute(f"SELECT md5(string_agg(CAST(w AS VARCHAR) || CAST(y AS VARCHAR), ',' ORDER BY ALL)) "
-                    f"FROM read_parquet('{tr}')").fetchone()[0]
-    b = con.execute(f"SELECT md5(string_agg(CAST(w AS VARCHAR) || CAST(y AS VARCHAR), ',' ORDER BY ALL)) "
-                    f"FROM read_parquet('{(outs[1][0] / 'h2o_train.parquet').as_posix()}')").fetchone()[0]
-    assert a == b and outs[0][1] == outs[1][1]
+    d0, d1 = (pd.read_parquet(x[0] / "h2o_train.parquet") for x in outs)
+    d0 = d0.sort_values(list(d0.columns)).reset_index(drop=True)
+    d1 = d1.sort_values(list(d1.columns)).reset_index(drop=True)
+    assert d0.equals(d1) and outs[0][1] == outs[1][1]
     for split in ("valid", "test"):
         meta = (o / f"meta_{split}.parquet").as_posix()
         assert con.execute(f"SELECT count(*) FROM read_parquet('{meta}') WHERE smart_rule_flag IS NULL").fetchone()[0] == 0
@@ -264,5 +269,60 @@ def test_split_date_outside_manifest_range_stops(phase3_synth, tmp_path):
     m["splits"]["train_end"] = "2020-06-30"  # train rows now go past the stated end
     (bad / "phase3_manifest.json").write_text(json.dumps(m))
     with pytest.raises(SystemExit) as exc:
-        train_h2o.main(["--data", str(bad), "--horizon", "7", "--out", str(tmp_path / "o"), "--port", "54651"])
+        train_h2o.main(["--data", str(bad), "--horizon", "7", "--out", str(tmp_path / "o"), "--port", "54651",
+                        "--not-protocol"])
     assert "outside its range" in str(exc.value)
+
+
+def test_zero_smart_alerts_means_nothing_inspected():
+    m = metrics.evaluate(np.array([1, 0]), np.array([0.9, 0.1]), is_probability=False, rule_flag_count=0)
+    assert m["recall_at_smart_volume"] == 0.0 and np.isnan(m["precision_at_smart_volume"]) and m["alert_volume"] == 0
+
+
+def test_tiny_neg_keep_is_rejected(tmp_path):
+    from drivepriority.models import train_h2o
+    with pytest.raises(SystemExit) as exc:
+        train_h2o.main(["--data", str(tmp_path), "--horizon", "7", "--out", str(tmp_path / "o"),
+                        "--neg-keep", "0.00001", "--not-protocol", "--port", "54661"])
+    assert "rounds to zero" in str(exc.value)
+
+
+def test_input_without_hdd_cohort_stops(phase3_synth, tmp_path):
+    from drivepriority.models import train_h2o
+    with pytest.raises(SystemExit) as exc:
+        train_h2o.main(["--data", str(phase3_synth), "--horizon", "7", "--out", str(tmp_path / "o"), "--port", "54671"])
+    assert "HDD-only" in str(exc.value)
+
+
+def test_gap_audit_and_strict_negatives(tmp_path):
+    """A healthy label needs only a later sighting; strict mode turns gap windows into unknown."""
+    from drivepriority.models import train_h2o
+    d = tmp_path / "p3"
+    d.mkdir()
+    base = date(2021, 1, 1)
+    rows = []
+    # Drive A: seen on days 0, 1 and 10 only (gap), never fails. Drive B: seen every day 0..12.
+    for drive, offs in (("A|M", [0, 1, 10]), ("B|M", list(range(13)))):
+        for o in offs:
+            rows.append({"drive_id": drive, "date": base + timedelta(days=o), "eval_fail_date": None,
+                         "label_7d": 0 if o + 7 <= max(offs) else None, "weight": 1.0,
+                         "smart_5_raw": 0.0, "smart_187_raw": None, "smart_188_raw": None,
+                         "smart_197_raw": 0.0, "smart_198_raw": None,
+                         "smart_rule_flag": None, "smart_rule_score": 0.0})
+    df = pd.DataFrame(rows)
+    df["eval_fail_date"] = pd.to_datetime(df["eval_fail_date"]).dt.date
+    for s in ("train", "valid", "test"):
+        df.to_parquet(d / f"model_{s}.parquet", index=False)
+    feats = ["smart_5_raw"]
+    for strict in (False, True):
+        o = tmp_path / f"o{int(strict)}"
+        o.mkdir()
+        c = train_h2o.prepare_files(d, o, 7, feats, 1.0, "1GB", None, strict_negatives=strict)
+        ga = c["train"]["gap_audit"]
+        # A: days 0,1 are labelled 0 (seen again on day 10) but days 2..7 / 3..8 were not observed.
+        assert ga["healthy_rows"] == 2 + 6 and ga["healthy_rows_with_unobserved_days_in_window"] == 2
+        kept = pd.read_parquet(o / "h2o_train.parquet")
+        assert len(kept) == (6 if strict else 8)
+        meta = pd.read_parquet(o / "meta_valid.parquet")
+        assert meta["y"].notna().sum() == (6 if strict else 8)
+        assert (meta["smart_rule_flag"] == 0).all() and (meta["smart_rule_count"] == 0).all()
