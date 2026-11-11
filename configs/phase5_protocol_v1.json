@@ -1,0 +1,41 @@
+{
+  "protocol_version": "phase5-v1",
+  "protocol_document": "docs/phase5_protocol.md",
+  "splits": {
+    "valid": {"first_day": "2024-01-01", "last_day": "2024-12-31"},
+    "test": {"first_day": "2025-01-01", "last_day": "2026-06-30"}
+  },
+  "budget_per_10000": {"primary": 20, "sensitivity": [10, 50]},
+  "scores": {
+    "smart": "smart_count",
+    "ml": "ml_h30",
+    "sensitivity": ["smart_count_sum", "smart_sum", "gbm_h30", "random"],
+    "rq3": ["ml_h7", "ml_h14", "ml_h30"]
+  },
+  "tie": {"mode": "drive", "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "sensitivity_mode": "day"},
+  "cooldown_days": 7,
+  "queue": {
+    "primary": {"admit_mult": 2, "cap_mult": 3, "expire_days": 3},
+    "sensitivity": [
+      {"admit_mult": 1, "cap_mult": 2, "expire_days": 2},
+      {"admit_mult": 2, "cap_mult": 5, "expire_days": 7}
+    ]
+  },
+  "endpoint": {"lead_min": 7, "lead_max": 30, "lead_max_sensitivity": 29, "lead_long_min": 14, "full_opportunity_days": 24},
+  "rq2": {
+    "history_reset_gap_days": 7,
+    "watchlist_mult": [1, 5],
+    "rules": [
+      {"name": "daily", "kind": "daily"},
+      {"name": "confirm_2", "kind": "confirm", "days": 2},
+      {"name": "confirm_3", "kind": "confirm", "days": 3},
+      {"name": "ewma_0.5", "kind": "ewma", "alpha": 0.5},
+      {"name": "ewma_0.2", "kind": "ewma", "alpha": 0.2},
+      {"name": "retain_2", "kind": "retain", "days": 2},
+      {"name": "retain_6", "kind": "retain", "days": 6}
+    ]
+  },
+  "bootstrap": {"reps": 2000, "seed": 20261111, "level": 0.95},
+  "fleet_subsample": {"fraction": 0.5, "reps": 5},
+  "min_events_for_subgroup_claim": 30
+}
