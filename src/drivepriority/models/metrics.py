@@ -3,6 +3,9 @@
 All functions take the labelled rows of ONE split (label known, never NULL) and a score
 (higher = riskier). Ranking metrics ignore the sampling weight because validation and test
 rows all carry the same weight (an outcome-independent hash sample of the whole fleet).
+Top-K metrics count drive-DAYS pooled over the whole split (not a per-day top-K, and not failure
+events caught); the per-day, per-event view is the Phase 5 simulation. Ties at the top-K cut-off
+are shared fairly (expected value over random tie-breaks), so row order cannot change a result.
 """
 from __future__ import annotations
 
@@ -15,21 +18,48 @@ from sklearn.metrics import average_precision_score, brier_score_loss, log_loss,
 TOP_FRACTIONS = (0.001, 0.005, 0.01, 0.05)
 
 
-def _top_k_mask(score: np.ndarray, k: int) -> np.ndarray:
-    """Boolean mask of the k highest scores. Ties are broken by row position (deterministic)."""
-    order = np.argsort(-score, kind="stable")
-    mask = np.zeros(len(score), dtype=bool)
-    mask[order[:k]] = True
-    return mask
+def top_k_hits(y: np.ndarray, score: np.ndarray, k: int) -> tuple[float, int]:
+    """Expected number of positives among the k highest scores, with ties shared fairly.
+
+    Rows strictly above the cut-off score are all flagged. Rows tied AT the cut-off fill the
+    remaining places; since no row among them is preferred, each gets the same chance, so they
+    contribute (places left) x (share of positives among the tied rows). This equals the mean
+    over all random tie-breaks and does not depend on row order (an earlier version let earlier
+    dates win ties). Returns (expected hits, number of rows tied at the cut-off).
+    """
+    y = np.asarray(y)
+    s = np.asarray(score, dtype=float)
+    n = len(s)
+    k = int(min(max(k, 1), n))
+    cut = np.partition(s, n - k)[n - k]          # k-th highest score
+    above = s > cut
+    at = s == cut
+    n_above = int(above.sum())
+    n_at = int(at.sum())
+    hits = float(y[above].sum()) + (k - n_above) * float(y[at].sum()) / n_at
+    return hits, n_at
 
 
 def recall_precision_at_k(y: np.ndarray, score: np.ndarray, k: int) -> tuple[float, float]:
-    """(recall, precision) when the k highest-scoring rows are flagged."""
+    """(recall, precision) when the k highest-scoring rows are flagged (ties shared fairly)."""
     y = np.asarray(y)
     k = int(min(max(k, 1), len(y)))
-    hit = int(y[_top_k_mask(np.asarray(score, dtype=float), k)].sum())
+    hit, _ = top_k_hits(y, score, k)
     pos = int(y.sum())
     return (hit / pos if pos else math.nan), hit / k
+
+
+def score_health(score: np.ndarray) -> dict:
+    """How much a score can rank: distinct values, biggest tie, rows saturated at 0 or 1."""
+    s = np.asarray(score, dtype=float)
+    n = len(s)
+    if n == 0:
+        return {"rows": 0}
+    _, counts = np.unique(s, return_counts=True)
+    return {"rows": int(n), "distinct_scores": int(len(counts)),
+            "largest_tie_rows": int(counts.max()), "largest_tie_share": float(counts.max() / n),
+            "rows_at_or_above_0.999999": int((s >= 1 - 1e-6).sum()),
+            "rows_at_or_below_1e-12": int((s <= 1e-12).sum())}
 
 
 def evaluate(y, score, *, is_probability: bool, rule_flag_count: int | None = None) -> dict:
@@ -59,8 +89,13 @@ def evaluate(y, score, *, is_probability: bool, rule_flag_count: int | None = No
         rec, prec = recall_precision_at_k(y, s, k) if n else (math.nan, math.nan)
         out[f"recall_top_{frac * 100:g}pct"] = rec
         out[f"precision_top_{frac * 100:g}pct"] = prec
+        out[f"tied_at_cut_top_{frac * 100:g}pct"] = top_k_hits(y, s, k)[1] if n else 0
     if rule_flag_count is not None and n:
-        rec, prec = recall_precision_at_k(y, s, max(int(rule_flag_count), 1))
+        if int(rule_flag_count) <= 0:
+            # Same volume as the rule means inspecting nothing: nothing is caught, precision undefined.
+            rec, prec = (0.0 if pos else math.nan), math.nan
+        else:
+            rec, prec = recall_precision_at_k(y, s, int(rule_flag_count))
         out["recall_at_smart_volume"] = rec
         out["precision_at_smart_volume"] = prec
         out["alert_volume"] = int(rule_flag_count)
