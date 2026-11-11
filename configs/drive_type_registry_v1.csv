@@ -1,0 +1,163 @@
+registry_version,model_norm,device_type,include_in_primary,evidence,drives,drive_days,failed_drives
+v1,HP SSD S700 250GB,SSD,False,"model name contains ""SSD""",110,5002,108
+v1,Seagate BarraCuda SSD ZA250CM10002,SSD,False,"model name contains ""SSD""",571,1216263,29
+v1,Seagate BarraCuda 120 SSD ZA250CM10003,SSD,False,"model name contains ""SSD""",1166,2119834,24
+v1,WD Blue SA510 2.5 250GB,SSD,False,WD Blue SA510 SSD,195,139199,20
+v1,CT250MX500SSD1,SSD,False,"model name contains ""SSD""",786,947627,14
+v1,MTFDDAV240TCB,SSD,False,Micron MTFDD... M.2/SATA SSD part number,97,177470,10
+v1,Samsung SSD 850 EVO 1TB,SSD,False,"model name contains ""SSD""",10,1326,10
+v1,Seagate SSD,SSD,False,"model name contains ""SSD""",109,261166,8
+v1,DELLBOSS VD,UNKNOWN,False,"Dell BOSS virtual disk (a RAID volume of boot SSDs, not a physical drive model)",437,772846,3
+v1,WDC WDS250G2B0A,SSD,False,WD SSD part number (WDS...),191,214919,3
+v1,MTFDDAV240TDU,SSD,False,Micron MTFDD... M.2/SATA SSD part number,2,273,2
+v1,Micron 5300 MTFDDAK480TDS,SSD,False,Micron 5xxx enterprise SSD,5,2336,1
+v1,SSDSCKKB480G8R,SSD,False,"model name contains ""SSD""",6,739,1
+v1,Seagate BarraCuda SSD ZA2000CM10002,SSD,False,"model name contains ""SSD""",4,8176,1
+v1,Seagate FireCuda 120 SSD ZA500GM10001,SSD,False,"model name contains ""SSD""",7,6999,1
+v1,00MD00,UNKNOWN,False,blank or unrecognisable model string (no device name),1,7,0
+v1,MTFDDAV480TCB,SSD,False,Micron MTFDD... M.2/SATA SSD part number,2,2003,0
+v1,MTFDDAV480TDS,SSD,False,Micron MTFDD... M.2/SATA SSD part number,2,12,0
+v1,Micron 5400 MTFDDAK480TGA,SSD,False,Micron 5xxx enterprise SSD,4,276,0
+v1,SSDSCKKB240GZR,SSD,False,"model name contains ""SSD""",1,1229,0
+v1,Samsung SSD 850 PRO 1TB,SSD,False,"model name contains ""SSD""",1,480,0
+v1,Samsung SSD 860 PRO 2TB,SSD,False,"model name contains ""SSD""",3,1122,0
+v1,Samsung SSD 870 EVO 2TB,SSD,False,"model name contains ""SSD""",1,437,0
+v1,Seagate BarraCuda 120 SSD ZA500CM10003,SSD,False,"model name contains ""SSD""",3,4410,0
+v1,Seagate BarraCuda SSD ZA500CM10002,SSD,False,"model name contains ""SSD""",18,43839,0
+v1,Seagate IronWolf ZA250NM10002,SSD,False,Seagate ZA... SSD part number,205,171607,0
+v1,ST4000DM000,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",36163,69849069,4919
+v1,ST12000NM0008,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",21037,44683877,2610
+v1,ST8000NM0055,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",15680,46294565,2513
+v1,ST12000NM0007,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",38843,37397599,2302
+v1,TOSHIBA MG07ACA14TA,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",39387,78387008,2291
+v1,HGST HUH721212ALN604,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",11438,27776092,1856
+v1,ST8000DM002,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",10320,33669155,1416
+v1,HGST HUH721212ALE604,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",14352,25209144,1224
+v1,TOSHIBA MG08ACA16TA,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",41061,41520709,1215
+v1,ST16000NM001G,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",36031,47227179,877
+v1,ST14000NM001G,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",11268,20975305,794
+v1,ST12000NM001G,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",13877,26300571,721
+v1,TOSHIBA MG08ACA16TEY,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",5352,8475023,549
+v1,ST14000NM0138,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1690,2878064,463
+v1,WDC WUH721816ALE6L4,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",26685,30731948,452
+v1,HGST HMS5C4040BLE640,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",16325,39345638,427
+v1,WDC WUH722222ALE6L4,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",46041,26618389,423
+v1,TOSHIBA MQ01ABF050,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",589,1046400,403
+v1,TOSHIBA MG08ACA16TE,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",6665,10113070,341
+v1,ST10000NM0086,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1304,3651588,328
+v1,ST24000NM002H,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",9900,3640687,302
+v1,WDC WUH721414ALE6L4,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",8872,17127349,254
+v1,TOSHIBA MQ01ABF050M,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",452,845263,251
+v1,ST500LM012 HN,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",804,1656272,229
+v1,TOSHIBA MG10ACA20TE,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",25410,9324427,201
+v1,HGST HMS5C4040ALE640,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",8640,13295335,181
+v1,WDC WUH721816ALE6L0,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",3070,4934292,157
+v1,HGST HUH728080ALE600,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1216,3245695,123
+v1,HGST HUH721212ALE600,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",2697,6351520,110
+v1,ST500LM030,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",293,575093,107
+v1,ST4000DX000,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",212,127760,71
+v1,ST6000DX000,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1912,3768388,70
+v1,TOSHIBA MG07ACA14TEY,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1059,1324965,64
+v1,ST320LT007,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",73,15281,63
+v1,WDC WD5000LPVX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",343,745587,63
+v1,Hitachi HDS5C3030ALA630,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",4563,2354602,50
+v1,Hitachi HDS722020ALA330,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",4503,938218,48
+v1,WDC WD30EFRX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1167,632221,47
+v1,WDC WD60EFRX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",471,514668,44
+v1,ST4000DM001,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",425,96059,34
+v1,Hitachi HDS723030ALA640,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1000,478479,26
+v1,TOSHIBA MG11ACA24TE,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",9630,1694377,23
+v1,Hitachi HDS5C4040ALE630,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",2639,2013200,22
+v1,ST12000NM000J,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1116,730603,22
+v1,WUH721816ALE6L4,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",624,163640,22
+v1,HGST HUH728080ALE604,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",98,133989,21
+v1,ST14000NM0018,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",80,98645,17
+v1,WDC WUH722626ALE6L4,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",7217,736527,17
+v1,WDC WD800AAJS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",14,1733,14
+v1,ST14000NM000J,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",514,259310,13
+v1,TOSHIBA HDWF180,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",69,102070,13
+v1,ST18000NM000J,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",79,126713,11
+v1,ST4000DM005,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",90,95815,11
+v1,ST16000NM002J,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",474,594659,10
+v1,ST12000NM0117,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",30,18730,9
+v1,TOSHIBA MD04ABA400V,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",147,340463,8
+v1,WDC WD1600AAJS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",101,66976,8
+v1,ST3160318AS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",47,15661,7
+v1,ST8000DM004,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",7,2822,7
+v1,WDC WD10EADS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",295,8333,7
+v1,WDC WD5000LPCX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",57,186844,7
+v1,TOSHIBA MG09ACA16TE,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",915,169812,6
+v1,WDC WD20EFRX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",158,31040,6
+v1,ST16000NM000J,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",183,82367,5
+v1,ST250LM004 HN,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",35,24021,5
+v1,WDC WD800BB,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",5,424,5
+v1,ST250LT007,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",4,396,4
+v1,ST4000DX002,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",7,2318,4
+v1,ST500LM021,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",33,80284,4
+v1,ST9250315AS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",56,43855,4
+v1,WDC WD1600AAJB,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",6,614,4
+v1,WDC WD800JB,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",4,384,4
+v1,HGST HDS5C4040ALE630,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",116,132905,3
+v1,HGST HUS726040ALE610,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",55,77966,3
+v1,ST31500541AS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",264,30512,3
+v1,ST8000DM005,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",27,70278,3
+v1,ST8000NM000A,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",250,306626,3
+v1,WDC WD5000BPKT,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",24,44378,3
+v1,ST10000NM001G,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",29,44440,2
+v1,ST3160316AS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",53,27527,2
+v1,TOSHIBA DT01ACA300,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",48,26607,2
+v1,WDC WD10EACS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",60,1527,2
+v1,WDC WD3200BEKX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",11,6467,2
+v1,WDC WD40EFRX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",48,46889,2
+v1,WDC WD5002ABYS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",5,2052,2
+v1,WDC WD800AAJB,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",7,610,2
+v1,HGST HUS728T8TALE6L4,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",20,26923,1
+v1,ST14000NM002J,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",26,8591,1
+v1,ST16000NM000G,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",17,4344,1
+v1,ST16000NM002H,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",33,2240,1
+v1,ST3500320AS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,505,1
+v1,ST4000DM004,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",20,13654,1
+v1,ST9320325AS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",24,20641,1
+v1,TOSHIBA MD04ABA500V,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",46,53235,1
+v1,WDC WD1600BPVT,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",2,857,1
+v1,WDC WD3200AAJB,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",2,158,1
+v1,WDC WD3200BEKT,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,99,1
+v1,WDC WD800JD,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,84,1
+v1,WDC WD800LB,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,76,1
+v1,WDC WUH722016CLE6L4,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",66,3630,1
+v1,HGST HDS724040ALE640,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",40,26270,0
+v1,HGST HMS5C4040BLE641,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,2171,0
+v1,HGST HUH721010ALE600,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",20,54603,0
+v1,HGST HUS726040ALN610,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",19,4334,0
+v1,Hitachi HDS5C3030BLE630,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,478,0
+v1,Hitachi HDS723020BLA642,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",8,1516,0
+v1,Hitachi HDS723030BLE640,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",9,5070,0
+v1,Hitachi HDS724040ALE640,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",3,2638,0
+v1,Hitachi HDT725025VLA380,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,472,0
+v1,SAMSUNG HD154UI,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,5,0
+v1,ST1000LM024 HN,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,3394,0
+v1,ST12000NM002H,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",3,230,0
+v1,ST12000NM003G,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",29,14717,0
+v1,ST16000NM005G,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",26,50921,0
+v1,ST2000VN000,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",6,1212,0
+v1,ST31500341AS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,15,0
+v1,ST33000651AS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,580,0
+v1,ST6000DM001,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",15,17468,0
+v1,ST6000DM004,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",3,2758,0
+v1,TOSHIBA HDWE160,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",10,10439,0
+v1,TOSHIBA MG11ACA16TE,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",78,5648,0
+v1,WDC WD1000FYPS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,20,0
+v1,WDC WD1001FALS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,19,0
+v1,WDC WD10EADX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",14,341,0
+v1,WDC WD10EALS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,26,0
+v1,WDC WD10EARS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",3,130,0
+v1,WDC WD10EARX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",2,21,0
+v1,WDC WD15EARS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,31,0
+v1,WDC WD2500AAJB,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,154,0
+v1,WDC WD2500AAJS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",3,2761,0
+v1,WDC WD2500BEVT,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,461,0
+v1,WDC WD2500BPVT,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",8,5871,0
+v1,WDC WD3200AAJS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",3,2482,0
+v1,WDC WD3200AAKS,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,504,0
+v1,WDC WD3200LPVX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",1,862,0
+v1,WDC WD5003ABYX,HDD,True,"hard-drive part-number pattern; not an SSD by name (hint, not manufacturer-verified)",2,1044,0
