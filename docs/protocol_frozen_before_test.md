@@ -100,4 +100,22 @@ rerun with the same settings after the cause is fixed and logged here; results o
 
 ## 10. Deviations after freezing
 
-(none yet)
+None of the rules, data, settings or code above changed. Two bookkeeping notes:
+
+1. **Git commit in `run_info.json` (logged 11 Nov 2026, after the three final runs were accepted).** The three runs
+   record git commit `077757364b30dc11f65ed1fa5ee2d4b997dd3884` (the first Phase 4 commit), while section 4 names
+   `f7004d4`. The code was run from the kit zip (SHA-256 `949590be...`) unpacked over an older checkout, so git
+   reported the old HEAD. What counts is the file hashes: `train_h2o.py` 123b2cdf... and `metrics.py` 7ca670a9... in
+   all three `run_info.json` files equal section 4. No test result was used for this note.
+2. **Final runs (10-11 Nov 2026, one MacBook Pro, port 54321, 12G).** h30, h14 and h7 passed all section 8 checks.
+   Warning only: GBM has rows tied at the top-1% cut on test (h30 295,402; h14 39,067; h7 none). Not a failure.
+
+## 11. Primary models (rule in section 6; validation 2024 average precision only)
+
+| Horizon | DRF | GBM | SMART count | GLM | LR | Primary |
+|---|---|---|---|---|---|---|
+| 7 days | 0.0563 | 0.0481 | 0.0129 | 0.0114 | 0.0019 | DRF |
+| 14 days | 0.0729 | 0.0692 | 0.0215 | 0.0160 | 0.0034 | DRF |
+| 30 days | 0.0845 | 0.0702 | 0.0363 | 0.0279 | 0.0062 | DRF |
+
+DRF leads GBM by more than 0.001 at every horizon, so the tie rule did not apply. Test results were not used.
