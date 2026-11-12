@@ -60,14 +60,35 @@ Expected from the logic: no number of the eight primary cells moves.
 - C-3, C-4, C-6: checks and locks only.
 - C-5: same order of rows, so the `smart_count_sum` sensitivity cells should be the same.
 
-**Still to do: repeat the 10% validation dry run with the fixed code and compare file by file.** The laptop
-was not reachable when the fixes were finished, so this comparison is not yet done. The result will be added
-here. Until then the statement above is an expectation, not a measured fact.
+### Measured: the dry run was repeated on 12 November 2026 with the fixed code (commit `1e9d54f`)
+
+Same replay input as the first run (`replay_valid.parquet`, SHA-256 `507a44c7…e558`, 10,467,899 rows), run in
+192 seconds on a Linux machine. All checks passed. Compared with the first run file by file:
+
+| File | Result |
+|---|---|
+| `cell_results.csv` (126 cells, every numeric column) | identical; largest difference 2e-16 (rounding between two machines) in interval ends |
+| `rq1_contrasts.csv` (238 contrasts) | estimates identical; interval ends within 3e-16 |
+| `rq2_stability.csv`, `rq3_horizons.csv`, `daily_capacity.csv` | identical (largest difference 3e-14) |
+| `event_coverage.parquet` (495 events, per-event result in each of the eight cells) | identical |
+| Queue entries removed by the new step 1b | 0 in every cell |
+
+One small difference: the column `share_of_resamples_above_zero` in `rq1_contrasts.csv` moves by at most 0.0035
+(7 of 2,000 resamples) in 36 rows. The estimates and intervals of the same rows are equal, so the likely cause is
+resamples whose difference is exactly zero and falls on one side or the other by rounding on another machine.
+This column is not used in any reported result. The reviewer may want to confirm the cause.
+
+Not repeated: the step that builds `replay_valid.parquet` from the Phase 4 score files (those files are on the
+laptop). That step's code changed only in one place (failure dates after 31 January 2025 are dropped at load).
+
+New check results on the real data: the no-future check compared 86 service logs (959,508 rows) from 23 policy
+families after changing 18.2 million later score values: no log changed. The eligible event set has the same
+SHA-256 in every cell and does not depend on scores.
 
 ## What the reviewer should check again
 
 1. B1 to B4 against the new code and tests (this file names each test).
 2. Protocol section 19: are C-1 to C-6 clarifications, or does any of them change an experimental setting?
-3. The repeat of the validation dry run, once it is added here.
+3. The repeat of the validation dry run recorded above.
 4. Still not checked by anybody outside the team: a rebuild of the Phase 4 scores, and the ten-seed decisions
    (only seed 0 logs are saved).

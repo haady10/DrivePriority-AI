@@ -313,9 +313,8 @@ first commit (same SHA-256).
 The entries below are **clarifications and implementation corrections** asked for by the independent review of
 12 November 2026 (`DrivePriority_AI_Phase5_Independent_Review.pdf`, verdict "do not accept" until fixed). They were
 written after the 10% validation dry run had been seen (test split never opened). None of them was chosen by
-looking at a result. The validation dry run is repeated with the fixed code and compared file by file; the
-comparison is recorded in `docs/phase5_review_fixes_2026-11-12.md`. The last column below is what the logic
-predicts until that comparison is recorded.
+looking at a result. The validation dry run was repeated with the fixed code on 12 November 2026 and compared
+file by file: no reported number moved (`docs/phase5_review_fixes_2026-11-12.md`).
 
 | No. | Date | What | Why | Results seen before? | Effect on the validation dry run |
 |---|---|---|---|---|---|
