@@ -153,7 +153,7 @@ def build_features(a) -> int:
     compare = feature_names + ["smart_rule_flag", "smart_rule_score"] + [f"label_{h}d" for h in HORIZONS]
 
     print("[2/3] Features per quarter (each with 31 earlier days) ...", flush=True)
-    done, total_rows, checked, missing, different = [], 0, 0, 0, 0
+    done, total_rows, checked, missing, different, unknown_labels = [], 0, 0, 0, 0, 0
     for name, qa, qb in quarters(first, last):
         if a.only and name not in a.only:
             continue
@@ -208,20 +208,33 @@ def build_features(a) -> int:
             TO '{f_out.as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
         rows, drives_q = con.execute(f"SELECT count(*), count(DISTINCT drive_id) FROM read_parquet('{f_out.as_posix()}')").fetchone()
         # ---- reconciliation with the Phase 3 sample (same drive-days must carry identical values)
-        diff = " OR ".join(f"p.{c} IS DISTINCT FROM f.{c}" for c in compare)
-        n_s, n_found, n_diff = con.execute(f"""
-            SELECT count(*), count(f.drive_id), count(*) FILTER (WHERE f.drive_id IS NOT NULL AND ({diff}))
+        # One difference is expected and allowed, and it is counted openly: a drive that vanishes from the data
+        # and returns after the reading boundary. Phase 3 read the later rows and labelled the day 0; this build
+        # stops at the boundary (B1) and leaves the label unknown (empty). Only "Phase 3 = 0, here = unknown,
+        # no failure" is allowed; any other label difference, and any feature difference, still stops the run.
+        feat_cols = [c for c in compare if not c.startswith("label_")]
+        lab_cols = [c for c in compare if c.startswith("label_")]
+        allowed = {c: f"(p.{c} = 0 AND f.{c} IS NULL AND f.eval_fail_date IS NULL)" for c in lab_cols}
+        diff = " OR ".join([f"p.{c} IS DISTINCT FROM f.{c}" for c in feat_cols]
+                           + [f"(p.{c} IS DISTINCT FROM f.{c} AND NOT {allowed[c]})" for c in lab_cols])
+        unk = " OR ".join(f"(p.{c} IS DISTINCT FROM f.{c} AND {allowed[c]})" for c in lab_cols)
+        n_s, n_found, n_diff, n_unk = con.execute(f"""
+            SELECT count(*), count(f.drive_id), count(*) FILTER (WHERE f.drive_id IS NOT NULL AND ({diff})),
+                   count(*) FILTER (WHERE f.drive_id IS NOT NULL AND NOT ({diff}) AND ({unk}))
             FROM (SELECT * FROM read_parquet('{sample_file.as_posix()}')
                   WHERE date BETWEEN DATE '{qa}' AND DATE '{qb}') p
             LEFT JOIN read_parquet('{f_out.as_posix()}') f USING (drive_id, date)""").fetchone()
         checked, missing, different = checked + n_s, missing + (n_s - n_found), different + n_diff
+        unknown_labels += n_unk
         total_rows += rows
         done.append({"quarter": name, "first": str(qa), "last": str(qb), "rows": rows, "drives": drives_q,
                      "returning_drives_fixed": n_need, "sample_rows_checked": n_s,
                      "sample_rows_missing": n_s - n_found, "sample_rows_different": n_diff,
+                     "sample_rows_label_unknown_here_zero_in_phase3": n_unk,
                      "file": f_out.name, "sha256": sha256_file(f_out), "seconds": round(time.time() - t1, 1)})
         print(f"  {name}: {rows:,} rows, {drives_q:,} drives; sample check {n_s:,} rows, "
-              f"{n_s - n_found:,} missing, {n_diff:,} different; {done[-1]['seconds']} s", flush=True)
+              f"{n_s - n_found:,} missing, {n_diff:,} different, {n_unk:,} label-unknown-here (allowed, see note); "
+              f"{done[-1]['seconds']} s", flush=True)
         if (n_s - n_found or n_diff) and not a.allow_mismatch:
             write_json(out / f"features_{a.split}_FAILED.json", {"quarters": done})
             raise SystemExit(f"{name}: the full-fleet features do NOT reproduce the Phase 3 sample. "
@@ -236,6 +249,9 @@ def build_features(a) -> int:
         "phase3_manifest_sha256": sha256_file(p3 / "phase3_manifest.json"),
         "sample_reconciliation": {"file": sample_file.name, "sha256": sha256_file(sample_file),
                                   "rows_checked": checked, "rows_missing": missing, "rows_different": different,
+                                  "rows_label_unknown_here_zero_in_phase3": unknown_labels,
+                                  "note_label_unknown": "drive absent, returned after the reading boundary; "
+                                                        "Phase 3 saw the return, this build does not read past the boundary",
                                   "passed": missing == 0 and different == 0},
         "quarters": done, "code_sha256": sha256_file(Path(__file__)), "runtime_seconds": round(time.time() - t0, 1),
         "run": run_metadata({k: str(v) for k, v in vars(a).items() if k != "func"})})

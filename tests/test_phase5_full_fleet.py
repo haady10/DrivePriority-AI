@@ -36,6 +36,8 @@ def snapshot(root, n=300, seed=7):
         fail_idx = int(rng.integers(200, days - 5)) if fails else None
         first, last = int(rng.integers(0, 40)), (fail_idx if fails else days - 1)
         away = (int(rng.integers(380, 900)), int(rng.integers(35, 70))) if i % 7 == 0 else None
+        if i % 5 == 3:                      # gone from 2021-11-30 to the end of March 2022: back AFTER the boundary
+            away = (700, 120)
         for k in range(first, last + 1):
             if away and away[0] <= k < away[0] + away[1]:
                 continue
@@ -105,6 +107,8 @@ def test_full_fleet_features_reproduce_the_phase3_sample_exactly(tmp_path):
     man = json.loads((out / "features_valid_manifest.json").read_text())
     rec = man["sample_reconciliation"]
     assert rec["passed"] and rec["rows_missing"] == 0 and rec["rows_different"] == 0 and rec["rows_checked"] > 10_000
+    # drives that vanish and return after the reading boundary: Phase 3 says 0, this build says unknown (counted)
+    assert rec["rows_label_unknown_here_zero_in_phase3"] > 0
     assert [q["quarter"] for q in man["quarters"]] == ["2021Q1", "2021Q2", "2021Q3", "2021Q4"]
     assert sum(q["returning_drives_fixed"] for q in man["quarters"]) > 0       # the long-absence path was used
     ff = pd.concat([pd.read_parquet(out / q["file"]) for q in man["quarters"]], ignore_index=True)
@@ -118,9 +122,17 @@ def test_full_fleet_features_reproduce_the_phase3_sample_exactly(tmp_path):
     # independent re-check of the reconciliation in pandas, column by column
     both = sample.merge(ff, on=["drive_id", "date"], suffixes=("_p3", "_ff"))
     assert len(both) == len(sample)
-    for c in man["feature_columns"] + ["smart_rule_score", "label_7d", "label_14d", "label_30d"]:
+    for c in man["feature_columns"] + ["smart_rule_score"]:
         a, b = both[f"{c}_p3"], both[f"{c}_ff"]
         assert ((a == b) | (a.isna() & b.isna())).all(), c
+    n_unknown = 0
+    for c in ["label_7d", "label_14d", "label_30d"]:
+        a, b = both[f"{c}_p3"], both[f"{c}_ff"]
+        same = (a == b) | (a.isna() & b.isna())
+        only_unknown = ~same & (a == 0) & b.isna() & both["eval_fail_date_ff"].isna()   # the one allowed pattern
+        assert (same | only_unknown).all(), c
+        n_unknown += int(only_unknown.sum())
+    assert n_unknown > 0
     # a drive that came back after more than 31 days carries the true gap, not an empty value
     back = ff[ff["days_since_prev_obs"] > 31]
     assert len(back) > 0 and back["days_since_prev_obs"].max() < 80
@@ -141,7 +153,15 @@ def test_feature_step_stops_on_a_wrong_sample_and_locks_the_test_split(tmp_path,
     df.to_parquet(f, index=False)
     with pytest.raises(SystemExit, match="do NOT reproduce"):
         run_features(tmp_path, snap, hdd, reg)
-    other = tmp_path / "other_registry.csv"
+    # a wrong LABEL (not the allowed "0 in Phase 3, unknown here") must stop the run too
+    df = pd.read_parquet(f)
+    df.loc[df.index[5], "smart_9_raw"] = df["smart_9_raw"].iloc[5] - 1
+    k = df.index[df["label_30d"] == 0][7]
+    df.loc[k, "label_30d"] = 1
+    df.to_parquet(f, index=False)
+    with pytest.raises(SystemExit, match="do NOT reproduce"):
+        run_features(tmp_path, snap, hdd, reg)
+    other =tmp_path / "other_registry.csv"
     other.write_text(reg.read_text() + "v1,EXTRA,HDD\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="registry"):
         run_features(tmp_path, snap, hdd, other)
