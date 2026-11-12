@@ -71,7 +71,7 @@ def split_bounds(manifest: dict, split: str) -> tuple[date, date]:
     return ends["valid"] + timedelta(days=1), ends["test"]
 
 
-def _lock(split: str, final: bool, authorization: str | None = None) -> dict | None:
+def _lock(split: str, final: bool) -> dict | None:
     """Validation needs nothing. The test split needs --final-test-run AND the committed authorization file."""
     if split not in ("valid", "test"):
         raise SystemExit(f"Unknown split: {split}")
@@ -80,13 +80,13 @@ def _lock(split: str, final: bool, authorization: str | None = None) -> dict | N
     if not final:
         raise SystemExit("The test split is locked. Use --final-test-run only for the final run after the "
                          "independent review.")
-    return check_test_authorization(load_protocol(), "full_fleet", authorization)
+    return check_test_authorization(load_protocol(), "full_fleet")
 
 
 # ====================================================================== step 1: features
 
 def build_features(a) -> int:
-    auth = _lock(a.split, a.final_test_run, a.authorization)
+    auth = _lock(a.split, a.final_test_run)
     t0 = time.time()
     out = Path(a.out).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -253,7 +253,7 @@ def score_features(a) -> int:
 
     from drivepriority.models.train_h2o import EXCLUDED_FEATURES
 
-    _lock(a.split, a.final_test_run, a.authorization)
+    _lock(a.split, a.final_test_run)
     t0 = time.time()
     feat_dir = Path(a.features).expanduser().resolve(strict=True)
     p4 = Path(a.phase4).expanduser().resolve(strict=True)
@@ -401,7 +401,6 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--only", nargs="*", help="only these quarters, e.g. 2024Q1 (testing)")
     f.add_argument("--allow-mismatch", action="store_true", help="debugging only: do not stop on a failed sample check")
     f.add_argument("--final-test-run", action="store_true")
-    f.add_argument("--authorization", help="test authorization JSON (default: configs/phase5_test_authorization.json)")
     f.set_defaults(func=build_features)
     s = sub.add_parser("score", help="step 2: score with the saved Phase 4 models (H2O)")
     s.add_argument("--features", required=True, help="output folder of the features step")
@@ -415,7 +414,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--only", nargs="*", help="only these months, e.g. 2024-01 (testing)")
     s.add_argument("--no-reconcile", action="store_true", help="skip the check against Phase 4 sample scores")
     s.add_argument("--final-test-run", action="store_true")
-    s.add_argument("--authorization", help="test authorization JSON (default: configs/phase5_test_authorization.json)")
     s.set_defaults(func=score_features)
     a = ap.parse_args(argv)
     return a.func(a)

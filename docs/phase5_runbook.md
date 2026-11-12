@@ -59,8 +59,9 @@ unless all of these are true:
 
 1. The switch `--final-test-run` is given. `--quick` and `--config` are refused.
 2. The protocol file is the frozen one (the code checks its hash).
-3. The file `configs/phase5_test_authorization.json` exists and is committed. The coordinator writes it after
-   the review:
+3. The file `configs/phase5_test_authorization.json` exists and is **committed**, and the checkout is clean
+   (`git status` shows no change in `configs/` and `src/drivepriority/simulation/`). The code asks git. There is
+   no option for another file or another register. The coordinator writes the file after the review:
 
 ```
 {
@@ -79,7 +80,9 @@ unless all of these are true:
 python -m drivepriority.simulation.run_phase5 --phase4 "<Phase 4 folder>" --split test --population sample10 --out "<new empty folder>" --final-test-run
 ```
 
-The register cannot see other machines. Run the test replay on one machine only and commit its `run_info.json`.
+The register cannot see other machines, and editing the code would pass it. So the rule is: **the coordinator
+runs the test replay, on one machine, from a clean commit, and commits `run_info.json` and the register entry**
+(`~/.drivepriority/phase5_test_replays_*.json`).
 Any repeat is a deviation and must be logged in `docs/phase5_protocol.md` section 19.
 
 ## 5. Full fleet (primary results, rule R18)

@@ -92,3 +92,88 @@ SHA-256 in every cell and does not depend on scores.
 3. The repeat of the validation dry run recorded above.
 4. Still not checked by anybody outside the team: a rebuild of the Phase 4 scores, and the ten-seed decisions
    (only seed 0 logs are saved).
+
+---
+
+# Re-review of 12 November 2026 (commit `6fabff1`): verdict "accept after small fixes"
+
+Re-review: `DrivePriority_Phase5_Independent_ReReview_2026-11-12.pdf`. It asks for three small actions before the
+test split may be opened. All three are done. No experimental setting was changed and the test split was not opened.
+
+## Action 1: C-2 is a behaviour change, and validation outcomes had been seen
+
+Agreed. Protocol section 19 now has a column "Kind" (Behaviour, Correction, Control) and a paragraph on C-2:
+
+- The first protocol said only "the queue never exceeds 3 x K". It did not say what happens when K falls below
+  a queue that is already longer. Step 1b decides that. It is a change to the method.
+- It was written on 12 November 2026, **after** the outcomes of the 10% validation dry run were observed.
+- In the 2024 validation replay the case did not occur: 0 entries removed in every cell. No validation number
+  depends on the rule.
+- On the test period it may occur. The report must then give the number of removed entries
+  (`queue_removed_cap_fell` in `cell_results.csv`).
+
+All eight entries (C-1 to C-8) are marked "Validation sample: yes" for results seen before.
+
+## Action 2: overrides of the test lock
+
+The re-review is right that `--authorization` and `--test-lock-dir` made the one-time control easy to pass.
+
+| Before | Now (C-7) |
+|---|---|
+| `--authorization <any file>` | Option removed. One fixed place: `configs/phase5_test_authorization.json` |
+| `--test-lock-dir <any folder>` | Option removed. One fixed place: `~/.drivepriority/` |
+| "Committed" was only a word in the documentation | The code asks git: the authorization file must be committed, and `configs/` and the simulation code must be exactly as in the commit. Otherwise the test split is refused |
+| Register entry: time, output folder, authorization hash | Also: git commit, who authorized, machine, user |
+
+Tests: `test_test_split_needs_authorization_and_runs_once_whatever_the_output_folder` (the two options are now
+unknown to the command line; an authorization that is not committed is refused) and
+`test_authorization_must_be_committed_and_the_checkout_clean` (a real temporary git repository: not committed,
+committed, code edited after the commit).
+
+What this does **not** do, stated openly: a person who edits the code or deletes the register can still run
+again, and the register cannot see another machine. No software lock on the team's own machine can prevent
+that. The control is therefore the second choice the re-review offers: **coordinator-controlled execution with
+an auditable run record.** The coordinator runs the test replay, on one machine, from a clean commit, and
+commits `run_info.json` (protocol hash, code hashes, authorization, input hashes, machine) and the register entry.
+
+## Action 3: the 36 differing rows of `share_of_resamples_above_zero`
+
+Confirmed: the cause is resampled differences that are zero up to float rounding.
+
+How it was checked: the replay was repeated with a probe that, for each of the 238 contrasts, counted the
+resamples with an absolute difference below 1e-12.
+
+| Fact | Value |
+|---|---|
+| Rows where the laptop and the repeat differ | 36 |
+| Of these, rows that have at least one near-zero resample | 36 (all) |
+| Rows with no near-zero resample that differ | 0 |
+| Largest absolute value among the near-zero resamples | 4.4e-16 |
+| Smallest absolute value among all other resamples | 2.2e-4 |
+| Laptop value inside the range [count above +1e-12, count above -1e-12] | all 238 rows |
+| Difference never larger than the number of near-zero resamples of the row | all 238 rows |
+
+So there is a clean gap of twelve orders of magnitude between "zero with rounding noise" and the smallest real
+difference, and every differing row is explained by which side of zero the noise fell on. A resample of
+exactly zero happens when the resampled events are captured equally in both cells; it is most common where two
+cells are almost the same policy (for example queue 1K/2K/2d against fresh Top-K).
+
+Fix (C-8): the column counts a difference as above zero only when it is larger than 1e-12. Test:
+`test_share_above_zero_treats_rounding_noise_as_a_tie`. The repeat with this fix gives, in all 238 rows, exactly
+the value the probe predicted; estimates, interval ends and "interval excludes zero" are unchanged (difference
+0.0), and all 126 cells are unchanged.
+
+Not done: the laptop run was not repeated with the fix, so "both machines now give the same column" is expected
+from the logic above, not measured. The column is not used in any reported result.
+
+## Tests after the re-review fixes
+
+48 pass (46 before), plus the opt-in H2O test.
+
+## Limits the re-review names, which stay open
+
+- Nobody outside the team has rebuilt the Phase 4 scores or the full-fleet scores.
+- Only the tie seed 0 service logs are saved; the ten-seed decisions were not reproduced independently.
+- The reviewer did not run the tests or the repeat; they are reported by the team.
+- The final conclusions need a separate review of the test replay.
+

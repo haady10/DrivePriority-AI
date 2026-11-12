@@ -126,13 +126,14 @@ def test_full_fleet_features_reproduce_the_phase3_sample_exactly(tmp_path):
     assert len(back) > 0 and back["days_since_prev_obs"].max() < 80
 
 
-def test_feature_step_stops_on_a_wrong_sample_and_locks_the_test_split(tmp_path):
+def test_feature_step_stops_on_a_wrong_sample_and_locks_the_test_split(tmp_path, monkeypatch):
+    from drivepriority.simulation import config as p5config
+    monkeypatch.setattr(p5config, "DEFAULT_AUTHORIZATION", tmp_path / "missing.json")
     snap, hdd, reg = phase3_hdd(tmp_path)
     with pytest.raises(SystemExit, match="locked"):
         run_features(tmp_path, snap, hdd, reg, split="test")
     with pytest.raises(SystemExit, match="no authorization file"):          # the switch alone is not enough
-        run_features(tmp_path, snap, hdd, reg, split="test",
-                     extra=["--final-test-run", "--authorization", str(tmp_path / "missing.json")])
+        run_features(tmp_path, snap, hdd, reg, split="test", extra=["--final-test-run"])
     # damage one value of the sample file: the reconciliation must notice and stop
     f = hdd / "model_valid.parquet"
     df = pd.read_parquet(f)

@@ -6,7 +6,9 @@ Protocol: `phase5-v1`. Code: branch `phase5/simulation`, commit `61ba45c`. The r
 hash with LF line endings is `22110661…0af6`).
 
 **Corrected on 12 November 2026 after the independent review** (wording points C2, C3, C4, C6 and the place of
-the tie sensitivity). No number from the run was changed. The code fixes asked for by the review and the
+the tie sensitivity). No number from the run was changed. One rule of the method was added after these results were seen: what the
+queue does when the daily capacity falls below its length (protocol section 19, C-2). The case did not occur
+in this run (0 entries removed), so no number here depends on it. The code fixes asked for by the review and the
 repeat of this dry run are in `docs/phase5_review_fixes_2026-11-12.md`.
 
 **Status of these numbers: exploratory.** They come from the 10% sample of drives and from the validation

@@ -781,51 +781,113 @@ def test_protocol_hash_is_the_same_in_the_document_the_code_and_the_file(tmp_pat
     other.write_text(json.dumps(changed), encoding="utf-8")
     assert not load_protocol(other).is_frozen                                   # one number changed: not frozen
     with pytest.raises(SystemExit, match="not the frozen"):
-        p5config.check_test_authorization(load_protocol(other), "sample10", tmp_path / "none.json")
+        p5config.check_test_authorization(load_protocol(other), "sample10")
 
 
-def _authorization(tmp_path, **over):
+def _authorize(tmp_path, monkeypatch, committed=True, **over):
+    """Put an authorization file and a lock register in a temporary place. The command line has no option for
+    either, so the tests move the fixed places themselves."""
     auth = {"protocol_sha256": p5config.FROZEN_SHA256["phase5-v1"], "review_document": "review.pdf",
             "authorized_by": "coordinator", "test_replays_authorized": {"sample10": 1, "full_fleet": 1}}
     auth.update(over)
-    f = tmp_path / f"auth_{len(list(tmp_path.glob('auth_*.json')))}.json"
+    f = tmp_path / "phase5_test_authorization.json"
     f.write_text(json.dumps(auth), encoding="utf-8")
+    monkeypatch.setattr(p5config, "DEFAULT_AUTHORIZATION", f)
+    monkeypatch.setattr(p5config, "DEFAULT_LOCK_DIR", tmp_path / "register")
+    monkeypatch.setattr(p5config, "committed_state", lambda *a, **k: (
+        {"ok": True, "reason": "", "commit": "abc123"} if committed else
+        {"ok": False, "reason": "the authorization file is not committed", "commit": "abc123"}))
     return f
 
 
-def test_test_split_needs_authorization_and_runs_once_whatever_the_output_folder(tmp_path):
+def test_test_split_needs_authorization_and_runs_once_whatever_the_output_folder(tmp_path, monkeypatch):
     (tmp_path / "t").mkdir()
     p4t, _ = phase4_like(tmp_path / "t", split="test", n=300, days=100, n_fail=20, first=date(2025, 1, 1))
     lock = tmp_path / "register"
-    base = ["--phase4", str(p4t), "--split", "test", "--population", "sample10", "--test-lock-dir", str(lock)]
-    good = _authorization(tmp_path)
+    base = ["--phase4", str(p4t), "--split", "test", "--population", "sample10"]
     run = lambda out, *more: run_phase5.main(base + ["--out", str(tmp_path / out), *more])
+    monkeypatch.setattr(p5config, "DEFAULT_AUTHORIZATION", tmp_path / "missing.json")
+    monkeypatch.setattr(p5config, "DEFAULT_LOCK_DIR", lock)
     with pytest.raises(SystemExit, match="locked"):                             # no switch
-        run("o1", "--authorization", str(good))
+        run("o1")
     with pytest.raises(SystemExit, match="no authorization file"):              # switch, but no authorization
-        run("o1", "--final-test-run", "--authorization", str(tmp_path / "missing.json"))
+        run("o1", "--final-test-run")
+    for flag in (["--authorization", "x.json"], ["--test-lock-dir", str(tmp_path)]):   # the overrides are gone
+        with pytest.raises(SystemExit) as e:
+            run("o1", "--final-test-run", *flag)
+        assert e.value.code == 2                                                # argparse: unknown option
+    _authorize(tmp_path, monkeypatch)
     with pytest.raises(SystemExit, match="--quick is refused"):
-        run("o1", "--final-test-run", "--quick", "--authorization", str(good))
+        run("o1", "--final-test-run", "--quick")
     with pytest.raises(SystemExit, match="--config is refused"):
-        run("o1", "--final-test-run", "--authorization", str(good), "--config", str(p5config.DEFAULT_CONFIG))
+        run("o1", "--final-test-run", "--config", str(p5config.DEFAULT_CONFIG))
+    _authorize(tmp_path, monkeypatch, protocol_sha256="0" * 64)
     with pytest.raises(SystemExit, match="another protocol hash"):
-        run("o1", "--final-test-run", "--authorization", str(_authorization(tmp_path, protocol_sha256="0" * 64)))
+        run("o1", "--final-test-run")
+    _authorize(tmp_path, monkeypatch, authorized_by="")
     with pytest.raises(SystemExit, match="must name"):
-        run("o1", "--final-test-run", "--authorization", str(_authorization(tmp_path, authorized_by="")))
+        run("o1", "--final-test-run")
+    _authorize(tmp_path, monkeypatch, test_replays_authorized={"sample10": 0, "full_fleet": 1})
     with pytest.raises(SystemExit, match="does not allow"):
-        run("o1", "--final-test-run", "--authorization",
-            str(_authorization(tmp_path, test_replays_authorized={"sample10": 0, "full_fleet": 1})))
+        run("o1", "--final-test-run")
+    _authorize(tmp_path, monkeypatch, committed=False)                          # a file that is not committed
+    with pytest.raises(SystemExit, match="not committed"):
+        run("o1", "--final-test-run")
     assert not lock.exists()                                                    # no refused attempt used the run
     # the register is outside the output folder: a NEW output folder does not give a second run
-    auth = p5config.check_test_authorization(load_protocol(), "sample10", good)
-    reg = p5config.claim_test_replay(load_protocol(), "sample10", auth, tmp_path / "o1", lock)
-    assert len(json.loads(reg.read_text())) == 1
+    _authorize(tmp_path, monkeypatch)
+    auth = p5config.check_test_authorization(load_protocol(), "sample10")
+    reg = p5config.claim_test_replay(load_protocol(), "sample10", auth, tmp_path / "o1")
+    rec = json.loads(reg.read_text())
+    assert len(rec) == 1 and rec[0]["git_commit"] == "abc123" and rec[0]["authorized_by"] == "coordinator"
+    assert rec[0]["machine"] is not None and rec[0]["user"] and reg.parent == lock
     with pytest.raises(SystemExit, match="already replayed"):
-        run("o2", "--final-test-run", "--authorization", str(good))
+        run("o2", "--final-test-run")
     with pytest.raises(SystemExit, match="already replayed"):
-        p5config.claim_test_replay(load_protocol(), "sample10", auth, tmp_path / "o3", lock)
-    p5config.claim_test_replay(load_protocol(), "full_fleet", auth, tmp_path / "o4", lock)   # counted per population
+        p5config.claim_test_replay(load_protocol(), "sample10", auth, tmp_path / "o3")
+    p5config.claim_test_replay(load_protocol(), "full_fleet", auth, tmp_path / "o4")       # counted per population
     assert len(json.loads(reg.read_text())) == 2
+
+
+def test_authorization_must_be_committed_and_the_checkout_clean(tmp_path):
+    import subprocess
+    repo = tmp_path / "repo"
+    (repo / "configs").mkdir(parents=True)
+    (repo / "src" / "drivepriority" / "simulation").mkdir(parents=True)
+    code = repo / "src" / "drivepriority" / "simulation" / "engine.py"
+    code.write_text("x = 1\n")
+    git = lambda *a: subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *a],
+                                    check=True, capture_output=True)
+    auth = repo / "configs" / "phase5_test_authorization.json"
+    assert p5config.committed_state(tmp_path / "nowhere", auth)["ok"] is False             # not a git checkout
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "code")
+    auth.write_text("{}")
+    st = p5config.committed_state(repo, auth)
+    assert not st["ok"] and "not committed" in st["reason"]                                # written, not committed
+    git("add", "-A")
+    git("commit", "-q", "-m", "authorize")
+    st = p5config.committed_state(repo, auth)
+    assert st["ok"] and len(st["commit"]) == 40
+    code.write_text("x = 2\n")                                                             # code edited after commit
+    st = p5config.committed_state(repo, auth)
+    assert not st["ok"] and "differ from the commit" in st["reason"]
+
+
+def test_share_above_zero_treats_rounding_noise_as_a_tie():
+    from drivepriority.simulation import stats
+    rng = np.random.default_rng(1)
+    P = np.column_stack([rng.random(200), np.zeros(200)])
+    P[:, 1] = P[:, 0]                                         # two identical cells: every resampled difference is 0
+    row = evaluate_contrasts(P, {"same": {0: 1.0, 1: -1.0}}, 500, 3)[0]
+    assert row["estimate"] == 0 and row["share_of_resamples_above_zero"] == 0
+    noisy = P.copy()
+    noisy[:, 1] = P[:, 0] * (1 + 2e-16) - 1e-17               # float noise only
+    assert evaluate_contrasts(noisy, {"same": {0: 1.0, 1: -1.0}}, 500, 3)[0]["share_of_resamples_above_zero"] == 0
+    assert stats.ZERO_TOLERANCE == 1e-12
+    real = np.column_stack([np.ones(200), np.zeros(200)])     # a real difference is still counted
+    assert evaluate_contrasts(real, {"d": {0: 1.0, 1: -1.0}}, 500, 3)[0]["share_of_resamples_above_zero"] == 1
 
 
 def test_validation_replay_holds_no_failure_date_after_its_outcome_window(tmp_path):

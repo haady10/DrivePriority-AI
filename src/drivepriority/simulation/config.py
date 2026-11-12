@@ -113,12 +113,44 @@ def load_protocol(path: str | Path | None = None) -> Protocol:
 
 # ---------------------------------------------------------------------- test-split control (protocol section 16)
 
-def check_test_authorization(proto: Protocol, population: str, auth_path: str | Path | None = None) -> dict:
-    """The test split needs a written authorization: a JSON file committed to the repository after the
-    independent review. It names the frozen protocol hash and how many test replays each population may have."""
+CONTROLLED_PATHS = ("configs", "src/drivepriority/simulation")     # must be exactly as committed for a test run
+
+
+def committed_state(repo: Path | None = None, auth_file: Path | None = None) -> dict:
+    """Is the authorization file committed, and are the protocol, the authorization and the simulation code
+    exactly as in the commit? Asked from git. Without git, or outside a git checkout, the answer is no."""
+    import subprocess
+    repo = Path(repo) if repo else DEFAULT_CONFIG.parent.parent
+    auth_file = Path(auth_file) if auth_file else DEFAULT_AUTHORIZATION
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+    try:
+        head = git("rev-parse", "HEAD")
+        if head.returncode != 0:
+            return {"ok": False, "reason": "not a git checkout", "commit": None}
+        tracked = git("ls-files", "--error-unmatch", str(auth_file.resolve().relative_to(repo.resolve())))
+        if tracked.returncode != 0:
+            return {"ok": False, "reason": "the authorization file is not committed", "commit": head.stdout.strip()}
+        dirty = git("status", "--porcelain", "--", *CONTROLLED_PATHS)
+        if dirty.returncode != 0 or dirty.stdout.strip():
+            return {"ok": False, "reason": "configs/ or the simulation code differ from the commit: "
+                    + " ".join(dirty.stdout.split()), "commit": head.stdout.strip()}
+        return {"ok": True, "reason": "", "commit": head.stdout.strip()}
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return {"ok": False, "reason": f"git could not be asked ({type(e).__name__})", "commit": None}
+
+
+def check_test_authorization(proto: Protocol, population: str) -> dict:
+    """The test split needs a written authorization: configs/phase5_test_authorization.json, committed to the
+    repository after the independent review. It names the frozen protocol hash and how many test replays each
+    population may have. There is no command-line option for another file: the place is fixed.
+
+    The run must also start from a clean checkout (protocol, authorization and simulation code exactly as
+    committed), so the commit hash in the run record says which code and which authorization were used."""
     if not proto.is_frozen:
         raise SystemExit("The test split is refused: the protocol file is not the frozen one.")
-    p = Path(auth_path) if auth_path else DEFAULT_AUTHORIZATION
+    p = DEFAULT_AUTHORIZATION
     if not p.is_file():
         raise SystemExit(f"The test split is locked: no authorization file ({p}). It is written and committed by "
                          f"the coordinator after the independent review accepts the work.")
@@ -129,17 +161,25 @@ def check_test_authorization(proto: Protocol, population: str, auth_path: str | 
         raise SystemExit("The test authorization must name the review document and who authorized the run.")
     if int((auth.get("test_replays_authorized") or {}).get(population, 0)) < 1:
         raise SystemExit(f"The test authorization does not allow a test replay for population '{population}'.")
-    return {"file": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), **auth}
+    state = committed_state()
+    if not state["ok"]:
+        raise SystemExit(f"The test split is locked: {state['reason']}. Commit the authorization file and run from "
+                         f"a clean checkout, so the run record names the exact commit.")
+    return {"file": str(p), "sha256": hashlib.sha256(p.read_bytes().replace(b"\r\n", b"\n")).hexdigest(),
+            "git_commit": state["commit"], **auth}
 
 
-def claim_test_replay(proto: Protocol, population: str, auth: dict, out_dir: Path,
-                      lock_dir: str | Path | None = None) -> Path:
+def claim_test_replay(proto: Protocol, population: str, auth: dict, out_dir: Path) -> Path:
     """Record one test replay in the lock register of this machine, or stop when the authorized number is used up.
 
-    The register lives outside the output folder, so choosing a new output folder does not give a second run.
-    It cannot see other machines: across machines the control is the committed authorization file and the
-    committed run record (docs/phase5_protocol.md section 16)."""
-    reg_dir = Path(lock_dir) if lock_dir else DEFAULT_LOCK_DIR
+    The register is in the home folder of the user (no option to move it), so a new output folder does not give
+    a second run. Each entry is the audit record of one start: time, machine, user, commit, authorization hash.
+    Limits, stated openly: the register cannot see other machines, and a person who edits this code or deletes
+    the register can run again. The control is therefore: the coordinator runs the test replay, on one machine,
+    from a clean commit, and commits the run record (docs/phase5_protocol.md section 16)."""
+    import getpass
+    import platform
+    reg_dir = DEFAULT_LOCK_DIR
     reg_dir.mkdir(parents=True, exist_ok=True)
     reg = reg_dir / f"phase5_test_replays_{proto.sha256[:16]}.json"
     runs = json.loads(reg.read_text(encoding="utf-8")) if reg.is_file() else []
@@ -150,7 +190,12 @@ def claim_test_replay(proto: Protocol, population: str, auth: dict, out_dir: Pat
                          f"({reg}) and {allowed} are authorized. Another replay is a deviation: it must be logged in "
                          f"docs/phase5_protocol.md section 19 and authorized in the committed authorization file.")
     from datetime import datetime, timezone
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = "unknown"
     runs.append({"population": population, "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                 "output": str(out_dir), "authorization_sha256": auth["sha256"]})
+                 "output": str(out_dir), "authorization_sha256": auth["sha256"], "git_commit": auth.get("git_commit"),
+                 "authorized_by": auth.get("authorized_by"), "machine": platform.node(), "user": user})
     reg.write_text(json.dumps(runs, indent=2), encoding="utf-8")
     return reg

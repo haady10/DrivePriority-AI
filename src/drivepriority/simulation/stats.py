@@ -12,6 +12,11 @@ from __future__ import annotations
 
 import numpy as np
 
+# A resampled difference smaller than this is a tie (exactly zero up to float rounding). Without the tolerance
+# the count of resamples "above zero" moved by a few resamples between machines (review of 12 Nov 2026).
+# Real non-zero differences are at least 1 / (events x tie seeds), about 2e-4 here, so the two cannot be mixed up.
+ZERO_TOLERANCE = 1e-12
+
 
 def bootstrap_means(P: np.ndarray, reps: int, seed: int, chunk: int = 250) -> np.ndarray:
     """Column means of `reps` resamples of the rows of P (with replacement). Shape (reps, cells)."""
@@ -79,7 +84,7 @@ def evaluate_contrasts(P: np.ndarray, contrasts: dict, reps: int, seed: int, lev
         lo, hi = interval(samples, level) if len(P) else (np.nan, np.nan)
         rows.append({"contrast": name, "estimate": float(point @ w), "ci_low": lo, "ci_high": hi,
                      "interval_excludes_zero": bool(lo > 0 or hi < 0) if len(P) else False,
-                     "share_of_resamples_above_zero": float((samples > 0).mean()) if len(P) else np.nan,
+                     "share_of_resamples_above_zero": float((samples > ZERO_TOLERANCE).mean()) if len(P) else np.nan,
                      "events": int(P.shape[0])})
     return rows
 

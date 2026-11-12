@@ -179,8 +179,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", help="protocol JSON (default: configs/phase5_protocol_v1.json)")
     ap.add_argument("--final-test-run", action="store_true",
                     help="unlock the test split (once, after the independent review)")
-    ap.add_argument("--authorization", help="test authorization JSON (default: configs/phase5_test_authorization.json)")
-    ap.add_argument("--test-lock-dir", help="folder of the test-replay lock register (default: ~/.drivepriority)")
     ap.add_argument("--quick", action="store_true", help="smoke test only; results must not be reported")
     ap.add_argument("--drive-info", help="optional CSV: drive_id plus group columns (model, manufacturer, ...)")
     ap.add_argument("--duckdb-memory", default="4GB")
@@ -206,8 +204,8 @@ def main(argv: list[str] | None = None) -> int:
         if lock.exists():
             raise SystemExit(f"The test year was already replayed into this folder ({lock}). A second replay is a "
                              f"deviation: log it in docs/phase5_protocol.md section 19 and use a new output folder.")
-        auth = check_test_authorization(proto, a.population, a.authorization)
-        register = claim_test_replay(proto, a.population, auth, out, a.test_lock_dir)
+        auth = check_test_authorization(proto, a.population)
+        register = claim_test_replay(proto, a.population, auth, out)
         lock.write_text(json.dumps({"started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                     "protocol_sha256": proto.sha256, "population": a.population,
                                     "authorization_sha256": auth["sha256"], "lock_register": str(register)},

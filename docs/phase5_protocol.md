@@ -263,9 +263,14 @@ calendar days):
   protocol hash, the review document, who authorized it, and the number of test replays per population
   (1 for `sample10`, 1 for `full_fleet`); a free place in the lock register of the machine
   (`~/.drivepriority/`, outside the output folder, so a new output folder does not give a second run); and no
-  lock file in the output folder. The register cannot see other machines: across machines the control is the
-  committed authorization and the committed run record. A repeat needs a logged deviation and a changed,
-  committed authorization.
+  lock file in the output folder. There is no option to use another authorization file or another register
+  (correction C-7); the authorization must be committed and the run must start from a clean checkout, so the
+  commit hash in the run record names the code and the authorization that were used.
+  Limits, stated openly: the register cannot see other machines, and a person who edits the code or deletes the
+  register can run again. No software lock on a team's own machine can prevent that. The control is therefore
+  procedural: **the coordinator runs the test replay, on one machine, from a clean commit, and commits
+  `run_info.json` and the register entry.** A repeat needs a logged deviation and a changed, committed
+  authorization.
 - **Reading boundary (clarification C-1)**: a validation run uses no row and no failure date later than
   `valid_end + 31 days`. Those 31 days are the outcome window of the last validation day (a row of day `t` is
   labelled by failures up to `t + 30`; a decision of day `t` is judged by failures up to `t + 31`). This window
@@ -310,20 +315,37 @@ eligibility, capture share per cell, earliest lead), `service_log_<cell>.parquet
 No experimental setting has been changed. `configs/phase5_protocol_v1.json` is byte for byte the file of the
 first commit (same SHA-256).
 
-The entries below are **clarifications and implementation corrections** asked for by the independent review of
-12 November 2026 (`DrivePriority_AI_Phase5_Independent_Review.pdf`, verdict "do not accept" until fixed). They were
-written after the 10% validation dry run had been seen (test split never opened). None of them was chosen by
-looking at a result. The validation dry run was repeated with the fixed code on 12 November 2026 and compared
-file by file: no reported number moved (`docs/phase5_review_fixes_2026-11-12.md`).
+The entries below were asked for by the independent review of 12 November 2026
+(`DrivePriority_AI_Phase5_Independent_Review.pdf`, verdict "do not accept" until fixed) and by its re-review of the
+same day (verdict "accept after small fixes"). **All of them were written after the results of the 10% validation
+dry run had been seen.** The test split was never opened. None of them was chosen by looking at a result. The
+validation dry run was repeated with the fixed code and compared file by file: no reported number moved
+(`docs/phase5_review_fixes_2026-11-12.md`).
 
-| No. | Date | What | Why | Results seen before? | Effect on the validation dry run |
-|---|---|---|---|---|---|
-| C-1 | 12 Nov 2026 | Reading boundary `valid_end + 31 days` for the full-fleet build and for failure dates in any replay input (sections 2 and 16) | Review B1: the full-fleet validation build read drive first/last/failure dates up to the end of the test period | Validation sample: yes. Test: no | None on any reported number (later failure dates were never used for a result) |
-| C-2 | 12 Nov 2026 | Queue step 1b: what happens when the waiting entries exceed `3 x K_t` after K falls (section 8) | Review B2: the protocol says the queue never exceeds its cap; the code let old entries stay | Validation sample: yes. Test: no | None: the case did not occur (K moved between 53 and 60) |
-| C-3 | 12 Nov 2026 | The no-future-information check is done as written in section 16 (scramble, all families, exact logs); events compared by identity | Review B3: the first implementation cut the replay instead of scrambling and covered two cells | Validation sample: yes. Test: no | None on results; `checks.json` now holds the complete check |
-| C-4 | 12 Nov 2026 | Stronger test lock (section 16) | Review B4: the lock was only in the output folder and `--quick` was accepted | Validation sample: yes. Test: no | None |
-| C-5 | 12 Nov 2026 | `smart_count_sum` is computed row by row (count x 2^49 + sum + 1) instead of ranking the sums over the whole period | Review C5: a period-wide rank touches later rows, even if the order is the same | Validation sample: yes. Test: no | None expected: the order of rows inside every day is the same |
-| C-6 | 12 Nov 2026 | The code stops when the default protocol JSON does not have the frozen SHA-256; the hash is printed in this file | Review C1 | Validation sample: yes. Test: no | None |
+They are not all of the same kind. The column "Kind" says which is which:
+
+- **Behaviour**: the code now does something different in a case the first protocol text did not decide.
+  This is a real change to the method, made after validation outcomes were known. It must be named in the report.
+- **Correction**: the code did not do what the protocol already said; the code was brought in line.
+- **Control**: checks, locks and records. No effect on any simulated decision.
+
+**C-2 is a behaviour change, not a wording clarification.** The first protocol only said "the queue never
+exceeds 3 x K". It did not say what to do when K falls below a queue that is already longer. Step 1b decides that
+(keep the first 3 x K entries in service order, remove the rest, admit nothing that day). This rule was written
+on 12 November 2026, after the validation outcomes were observed. In the 2024 validation replay the case did
+not occur (0 entries removed in every cell), so no validation number depends on it. On the test period it may
+occur; the report must then say how many entries were removed (`queue_removed_cap_fell`).
+
+| No. | Kind | Date | What | Why | Results seen before? | Effect on the validation dry run |
+|---|---|---|---|---|---|---|
+| C-1 | Correction | 12 Nov 2026 | Reading boundary `valid_end + 31 days` for the full-fleet build and for failure dates in any replay input (sections 2 and 16) | Review B1: the full-fleet validation build read drive first/last/failure dates up to the end of the test period | Validation sample: yes. Test: no | None on any reported number (later failure dates were never used for a result) |
+| C-2 | **Behaviour** | 12 Nov 2026 | Queue step 1b: what happens when the waiting entries exceed `3 x K_t` after K falls (section 8) | Review B2: the protocol says the queue never exceeds its cap; the code let old entries stay | Validation sample: yes. Test: no | None: the case did not occur (K moved between 53 and 60) |
+| C-3 | Control | 12 Nov 2026 | The no-future-information check is done as written in section 16 (scramble, all families, exact logs); events compared by identity | Review B3: the first implementation cut the replay instead of scrambling and covered two cells | Validation sample: yes. Test: no | None on results; `checks.json` now holds the complete check |
+| C-4 | Control | 12 Nov 2026 | Stronger test lock (section 16) | Review B4: the lock was only in the output folder and `--quick` was accepted | Validation sample: yes. Test: no | None |
+| C-5 | Correction | 12 Nov 2026 | `smart_count_sum` is computed row by row (count x 2^49 + sum + 1) instead of ranking the sums over the whole period | Review C5: a period-wide rank touches later rows, even if the order is the same | Validation sample: yes. Test: no | None expected: the order of rows inside every day is the same |
+| C-6 | Control | 12 Nov 2026 | The code stops when the default protocol JSON does not have the frozen SHA-256; the hash is printed in this file | Review C1 | Validation sample: yes. Test: no | None |
+| C-7 | Control | 12 Nov 2026 | Test lock without overrides: the options `--authorization` and `--test-lock-dir` are removed; the authorization file has one fixed place, must be committed, and the run must start from a clean checkout (protocol, authorization and simulation code exactly as committed); the register entry records time, machine, user, commit and authorization hash | Re-review action 2: the overrides made the one-time control easy to pass | Validation sample: yes. Test: no | None |
+| C-8 | Correction | 12 Nov 2026 | `share_of_resamples_above_zero` counts a resampled difference as above zero only when it is larger than 1e-12 | Re-review action 3: the column moved by up to 7 of 2,000 resamples between two machines. Cause confirmed: resamples whose difference is zero up to float rounding (largest 4e-16; the smallest real difference is 2e-4) | Validation sample: yes. Test: no | Only this helper column; it is not used in any reported result. Estimates and intervals unchanged |
 
 Wording, not a rule change: in section 13 "c days in a row" means c consecutive **observed** records of the
 drive; the history starts again after a gap of more than 7 calendar days.
