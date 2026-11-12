@@ -177,3 +177,20 @@ from the logic above, not measured. The column is not used in any reported resul
 - The reviewer did not run the tests or the repeat; they are reported by the team.
 - The final conclusions need a separate review of the test replay.
 
+
+---
+
+# Final independent review of 12 November 2026 (commit `62c0cd5`): verdict "accept"
+
+Document: `DrivePriority_Phase5_Final_Acceptance_Review_2026-11-12.pdf`. PR #5 is accepted for the Phase 5
+implementation. No further code correction is required.
+
+What the acceptance does **not** cover, in the reviewer's own terms:
+
+- The reviewer did not run the tests and did not reproduce the simulation. The 48 passing tests and the repeat
+  of the dry run are reported by the team.
+- The reviewer's copy of this file did not yet hold the section on commit `62c0cd5`, so the three follow-up
+  fixes were accepted as reported, not checked against the file.
+- The Phase 4 and full-fleet score rebuild and the ten-seed decisions have not been reproduced independently.
+- It is not an approval of scientific conclusions. The test replay must stay coordinator-controlled and
+  auditable, and its results need a separate review.
