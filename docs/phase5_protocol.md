@@ -2,7 +2,7 @@
 
 Written: 11 November 2026, before any Phase 5 code was run on real data.
 Status: FIXED for the validation dry run. It becomes FROZEN for the test year after the independent review
-(section 17). Any later change is a **deviation**: it is added in section 18 with the date, the reason, and
+(section 16). Any later change is a **deviation**: it is added in section 19 with the date, the reason, and
 whether validation or test results had been seen.
 
 Plain-language summary: Phase 4 gave every drive a risk score for every day. Phase 5 replays history one day at
@@ -16,6 +16,12 @@ failures, downtime or costs are prevented.** "Failure" always means the failure 
 
 Machine-readable copy of every number in this file: `configs/phase5_protocol_v1.json`. The code reads the JSON.
 If the two ever differ, the run must stop and the difference is a deviation.
+SHA-256 of the frozen JSON: `22110661c20a838c709c9712249a36dfba6feef84291fd9316cbe66b8fa60af6` (taken after
+Windows line endings are turned into LF, so every machine gets the same value). The code holds the same value
+and stops when the default file has another hash; a test compares this line, the code and the file. The 10%
+validation dry run of 11 November ran on a Windows checkout and recorded
+`065900ccb5e01ab53754b5505555c423fa4484aac8c7e1deba0e56c661d4f2d2`: that is the hash of the same file with Windows
+line endings (a test proves it).
 
 ---
 
@@ -117,6 +123,11 @@ eligible. Drives that were not picked are forgotten.
 **Carry-forward queue** (primary setting `admit = 2K`, `cap = 3K`, `expire = 3 days`, fixed now, not tuned):
 
 1. *Expire*: remove queue entries admitted on day `a` when `t - a >= 3`.
+   *1b. Cap after a fall of K (clarification C-2, section 19)*: if the entries that are left are more than
+   `3 x K_t` (possible only when today's K is much smaller than before), keep the first `3 x K_t` in service
+   order (oldest admission day first, then drives observed today before absent ones, then today's ranking, then
+   the tie key) and remove the rest. They are logged with the reason `removed_cap_fell`. Nothing is admitted
+   on such a day.
 2. *Admit*: walk the day-`t` ranking from the top. A drive is admitted if it is in `O_t`, is not already in the
    queue and is eligible for service day `t+1`. Stop after `2 x K_t` new admissions or when the queue holds
    `3 x K_t` entries. One entry per drive.
@@ -246,7 +257,19 @@ calendar days):
   above before any replay result.
 - **Validation (2024)**: dry run, debugging, acceptance checks (below), first look at the results.
 - **Test (2025-01-01..2026-06-30)**: replayed **once**, after the independent review, with the frozen JSON
-  config (its SHA-256 is recorded). The code refuses the test split without an explicit final-run switch.
+  config (its SHA-256 is recorded). The code refuses the test split unless all of these hold (clarification
+  C-4): the switch `--final-test-run`; the frozen protocol file (no `--config`); no `--quick`; an authorization
+  file `configs/phase5_test_authorization.json` committed to the repository after the review, naming the
+  protocol hash, the review document, who authorized it, and the number of test replays per population
+  (1 for `sample10`, 1 for `full_fleet`); a free place in the lock register of the machine
+  (`~/.drivepriority/`, outside the output folder, so a new output folder does not give a second run); and no
+  lock file in the output folder. The register cannot see other machines: across machines the control is the
+  committed authorization and the committed run record. A repeat needs a logged deviation and a changed,
+  committed authorization.
+- **Reading boundary (clarification C-1)**: a validation run uses no row and no failure date later than
+  `valid_end + 31 days`. Those 31 days are the outcome window of the last validation day (a row of day `t` is
+  labelled by failures up to `t + 30`; a decision of day `t` is judged by failures up to `t + 31`). This window
+  was already part of the Phase 3 validation labels. No score, feature or decision uses it.
 - Validation and test are two separate periods. A pattern is called "replicated" only if it has the same sign
   in both and the test interval excludes zero.
 - Disclosure carried over from Phase 4: 2026 data was seen during early feasibility work; Phase 4 printed
@@ -257,7 +280,12 @@ scheduled inspections never exceed `K_t`; scheduled = completed + cancelled; no 
 day; the cooldown is never violated; the queue has one entry per drive, never exceeds its cap and holds no
 expired entry; the eligible-event set is identical in every cell; the replay input has no row on or after a
 failure day and no duplicate drive-day; a replay with all future rows scrambled gives identical decisions up to
-that day (no use of future information).
+that day (no use of future information). How the last check is done (clarification C-3): scores and labels of
+all rows after the middle day are shuffled between rows and all failure dates are removed; every policy family
+of the run (both scores, all budgets, all queue settings, both tie modes, every sensitivity score, every
+persistence rule, every horizon, urgency-first) is replayed on both copies up to that day and the service logs
+must be equal row by row; the eight primary logs must also equal the first part of the full replay. The
+eligible events are compared by identity (a hash of drive id and failure day), not by count.
 
 ## 17. Outputs
 
@@ -279,4 +307,24 @@ eligibility, capture share per cell, earliest lead), `service_log_<cell>.parquet
 
 ## 19. Deviations after fixing
 
-(none yet)
+No experimental setting has been changed. `configs/phase5_protocol_v1.json` is byte for byte the file of the
+first commit (same SHA-256).
+
+The entries below are **clarifications and implementation corrections** asked for by the independent review of
+12 November 2026 (`DrivePriority_AI_Phase5_Independent_Review.pdf`, verdict "do not accept" until fixed). They were
+written after the 10% validation dry run had been seen (test split never opened). None of them was chosen by
+looking at a result. The validation dry run is repeated with the fixed code and compared file by file; the
+comparison is recorded in `docs/phase5_review_fixes_2026-11-12.md`. The last column below is what the logic
+predicts until that comparison is recorded.
+
+| No. | Date | What | Why | Results seen before? | Effect on the validation dry run |
+|---|---|---|---|---|---|
+| C-1 | 12 Nov 2026 | Reading boundary `valid_end + 31 days` for the full-fleet build and for failure dates in any replay input (sections 2 and 16) | Review B1: the full-fleet validation build read drive first/last/failure dates up to the end of the test period | Validation sample: yes. Test: no | None on any reported number (later failure dates were never used for a result) |
+| C-2 | 12 Nov 2026 | Queue step 1b: what happens when the waiting entries exceed `3 x K_t` after K falls (section 8) | Review B2: the protocol says the queue never exceeds its cap; the code let old entries stay | Validation sample: yes. Test: no | None: the case did not occur (K moved between 53 and 60) |
+| C-3 | 12 Nov 2026 | The no-future-information check is done as written in section 16 (scramble, all families, exact logs); events compared by identity | Review B3: the first implementation cut the replay instead of scrambling and covered two cells | Validation sample: yes. Test: no | None on results; `checks.json` now holds the complete check |
+| C-4 | 12 Nov 2026 | Stronger test lock (section 16) | Review B4: the lock was only in the output folder and `--quick` was accepted | Validation sample: yes. Test: no | None |
+| C-5 | 12 Nov 2026 | `smart_count_sum` is computed row by row (count x 2^49 + sum + 1) instead of ranking the sums over the whole period | Review C5: a period-wide rank touches later rows, even if the order is the same | Validation sample: yes. Test: no | None expected: the order of rows inside every day is the same |
+| C-6 | 12 Nov 2026 | The code stops when the default protocol JSON does not have the frozen SHA-256; the hash is printed in this file | Review C1 | Validation sample: yes. Test: no | None |
+
+Wording, not a rule change: in section 13 "c days in a row" means c consecutive **observed** records of the
+drive; the history starts again after a gap of more than 7 calendar days.

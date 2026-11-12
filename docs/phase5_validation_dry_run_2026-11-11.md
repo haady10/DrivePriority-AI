@@ -1,7 +1,13 @@
 # Phase 5 dry run on the 2024 validation year (10% evaluation sample)
 
 Date: 2026-11-11. Machine: coordinator laptop (Windows, Python 3.11.9). Run time: 3,684 s (61 minutes).
-Protocol: `phase5-v1`, hash `065900cc…f2d2`. Code: branch `phase5/simulation`, commit `61ba45c`.
+Protocol: `phase5-v1`. Code: branch `phase5/simulation`, commit `61ba45c`. The run recorded the protocol hash
+`065900cc…f2d2`: this is the frozen file with Windows line endings (same content as the committed file, whose
+hash with LF line endings is `22110661…0af6`).
+
+**Corrected on 12 November 2026 after the independent review** (wording points C2, C3, C4, C6 and the place of
+the tie sensitivity). No number from the run was changed. The code fixes asked for by the review and the
+repeat of this dry run are in `docs/phase5_review_fixes_2026-11-12.md`.
 
 **Status of these numbers: exploratory.** They come from the 10% sample of drives and from the validation
 year. Rule R18 says the primary result must come from all HDDs. The test split (2025 to June 2026) was not
@@ -44,14 +50,27 @@ Policy effects: 7-day cooldown adds +34 points for SMART and +20 for ML (fresh T
 SMART and +7 for ML (next day). All these intervals exclude zero. The three-way interaction is +7.9 points
 (+2.7 to +13.2).
 
-Without a cooldown, 98% to 99% of the slots go to a drive that was already inspected before.
+Repeat share (slots that go to a drive that was already inspected before): 99.0% (E1) and 98.2% (E2) for
+next day with fresh Top-K, 97.7% (E5) and 96.9% (E6) for next day with the queue, and 94.0% to 95.8% with the
+7-day cooldown (E3, E4, E7, E8).
+
+**The SMART/ML order with the cooldown depends on the tie rule.** Both tie rules were fixed before the run and
+are the same for both scores:
+
+| Cooldown + fresh Top-K | ML minus SMART | 95% interval |
+|---|---|---|
+| Tie order fixed per drive (primary) | +0.5 points | -2.8 to +3.9 |
+| Tie order new every day (sensitivity) | -5.1 points | -8.7 to -1.4 |
+
+So the result "ML is not better than SMART once a cooldown is used" holds under both rules, and under the
+day rule SMART is ahead. The primary rule stays the primary rule; it is not changed after seeing this.
 
 Sensitivity (direction of ML minus SMART):
 
 - All five random fleet halves: same pattern (positive and clear for next day/fresh; near zero with cooldown).
 - Budgets 10 and 50: positive and clear for next day/fresh; with cooldown mostly not clear.
 - Runner-up model (GBM) and SMART count+sum: same pattern.
-- Day-level tie-breaking: with cooldown and fresh Top-K, SMART is 5.1 points **above** ML (interval excludes zero).
+- Day-level tie-breaking: see the table above (with cooldown and fresh Top-K, SMART is 5.1 points above ML).
 - SMART raw sum is a weak baseline (1.5% to 24%); ML is far above it in all policies.
 - Queue 1K/2K/2d gives the same result as fresh Top-K; queue 2K/5K/7d gives 36% to 54%.
 
@@ -61,11 +80,14 @@ Sensitivity (direction of ML minus SMART):
 |---|---|---|---|---|---|
 | SMART count | daily | 0.9 | 54 | 12.2% | 46.1% |
 | ML | daily | 2.7 | 20 | 26.1% | 46.6% |
-| ML | 2 days in a row | 2.5 | 21 | 24.1% | 45.3% |
-| ML | 3 days in a row | 2.4 | 23 | 23.3% | 45.0% |
+| ML | 2 observed records in a row | 2.5 | 21 | 24.1% | 45.3% |
+| ML | 3 observed records in a row | 2.4 | 23 | 23.3% | 45.0% |
 | ML | EWMA 0.5 | 2.1 | 25 | 24.6% | 46.1% |
 | ML | EWMA 0.2 | 1.7 | 31 | 22.2% | 45.3% |
 | ML | keep 6 more days | 2.0 | 27 | 25.4% | 46.8% |
+
+"In a row" means consecutive **observed** records of the drive (a day without a row is skipped); the history
+of a drive starts again after a gap of more than 7 calendar days.
 
 The ML list changes about three times as fast as the SMART list. "Keep 6 more days" cuts ML list entries by
 26% with no measurable loss of timely capture. EWMA 0.2 cuts entries by 37% and costs about 4 points without
@@ -85,8 +107,10 @@ Budgeted timely capture (fresh Top-K):
 Prediction quality on the same actionable label (failure 8 to 31 days after the decision day):
 average precision 0.068 (7-day model), 0.065 (14-day), 0.059 (30-day), 0.051 (GBM 30-day), 0.028 (SMART count).
 
-Each model is best on its own label (30-day model AP 0.0845 on the 30-day label), but for the question
-"which drives to inspect so that there are at least 7 days of lead", the 7-day model ranks best in this sample.
+On its own label each model has this average precision: 0.056 (7-day model, 7-day label), 0.073 (14-day),
+0.085 (30-day). These three numbers are on different labels with different base rates, so they do not say
+which model is better; the models were not scored on each other's labels. On the one shared label (the
+actionable label above) the 7-day model ranks best in this sample.
 The intervals of the three horizons overlap, so this is a direction, not a confirmed difference.
 
 ## What could be wrong
@@ -97,8 +121,10 @@ The intervals of the three horizons overlap, so this is a direction, not a confi
    inspection would have found the problem.
 4. Inspected drives stay in the fleet. In reality a replaced drive would free later slots.
 5. The capacity is a share of the sampled drives (about 57 slots per day), not of the real fleet.
-6. Drives that fail without any SMART signal cannot be caught by any score: 41% of events were not caught
-   in time by any of the eight cells.
+6. 182 of the 464 eligible events (39.2%) had no timely capture in any of the eight primary cells under any
+   of the ten tie seeds. With tie seed 0 alone the count is 188 (40.5%). This only describes these eight
+   policies at this budget. It does not show that these drives had no usable signal or that another method
+   could not select them.
 7. Run time on the laptop was 61 minutes; the full fleet (10 times the rows) needs the lab PC.
 
 ## Files

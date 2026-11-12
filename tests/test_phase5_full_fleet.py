@@ -130,6 +130,9 @@ def test_feature_step_stops_on_a_wrong_sample_and_locks_the_test_split(tmp_path)
     snap, hdd, reg = phase3_hdd(tmp_path)
     with pytest.raises(SystemExit, match="locked"):
         run_features(tmp_path, snap, hdd, reg, split="test")
+    with pytest.raises(SystemExit, match="no authorization file"):          # the switch alone is not enough
+        run_features(tmp_path, snap, hdd, reg, split="test",
+                     extra=["--final-test-run", "--authorization", str(tmp_path / "missing.json")])
     # damage one value of the sample file: the reconciliation must notice and stop
     f = hdd / "model_valid.parquet"
     df = pd.read_parquet(f)
@@ -141,6 +144,41 @@ def test_feature_step_stops_on_a_wrong_sample_and_locks_the_test_split(tmp_path)
     other.write_text(reg.read_text() + "v1,EXTRA,HDD\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="registry"):
         run_features(tmp_path, snap, hdd, other)
+
+
+def test_validation_build_does_not_depend_on_rows_after_its_outcome_window(tmp_path):
+    """Review B1: a validation build may use rows up to valid_end + 31 days and nothing later.
+    Every later row of the snapshot is rewritten (all drives 'fail', counters changed): the output must not move."""
+    snap, hdd, reg = phase3_hdd(tmp_path)
+    rc, out = run_features(tmp_path, snap, hdd, reg)
+    assert rc == 0
+    man = json.loads((out / "features_valid_manifest.json").read_text())
+    assert man["snapshot_rows_read_until"] == "2022-01-31" and man["test_authorization"] is None
+    before = {q["file"]: pd.read_parquet(out / q["file"]) for q in man["quarters"]}
+    boundary, changed = date(2022, 1, 31), 0
+    for f in sorted((snap / "2022").rglob("*.parquet")):
+        t = pq.read_table(f)
+        late = np.array([d > boundary for d in t.column("date").to_pylist()])
+        if not late.any():
+            continue
+        changed += int(late.sum())
+        fail = np.where(late, 1, np.array(t.column("failure").to_pylist())).astype("uint8")
+        s197 = [Decimal(999) if l else v for l, v in zip(late, t.column("smart_197_raw").to_pylist())]
+        t = t.set_column(t.schema.get_field_index("failure"), "failure", pa.array(fail, pa.uint8()))
+        t = t.set_column(t.schema.get_field_index("smart_197_raw"), "smart_197_raw", pa.array(s197, D38))
+        pq.write_table(t, f)
+    assert changed > 10_000
+    out2 = tmp_path / "ff2"
+    assert full_fleet.main(["features", "--snapshot", str(snap), "--phase3", str(hdd), "--registry", str(reg),
+                            "--split", "valid", "--out", str(out2), "--memory-limit", "1GB",
+                            "--temp-dir", str(tmp_path / "t")]) == 0
+    man2 = json.loads((out2 / "features_valid_manifest.json").read_text())
+    assert [q["file"] for q in man2["quarters"]] == list(before)
+    for name, df in before.items():
+        pd.testing.assert_frame_equal(pd.read_parquet(out2 / name), df)
+    # no failure date after the boundary is carried by any row
+    alld = pd.concat(before.values())
+    assert not (pd.to_datetime(alld["eval_fail_date"]).dt.date > boundary).any()
 
 
 @pytest.mark.skipif(os.environ.get("DP_RUN_H2O_TESTS") != "1", reason="set DP_RUN_H2O_TESTS=1 to run H2O tests")

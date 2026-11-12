@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from drivepriority.simulation import checks as p5checks
+from drivepriority.simulation import config as p5config
 from drivepriority.simulation import run_phase5
 from drivepriority.simulation.config import QueueConfig, load_protocol
 from drivepriority.simulation.engine import PolicyResult, PolicySpec, capacity, run_replay
@@ -175,7 +177,12 @@ def reference_replay(data, tie, budget, cd, queue):
             continue
         for d in [d for d, a in q.items() if t - a >= queue.expire_days]:
             del q[d]
-        room = max(0, min(queue.admit_mult * K, queue.cap_mult * K - len(q)))
+        cap = queue.cap_mult * K
+        if len(q) > cap:                      # step 1b: K fell, keep the first `cap` entries in service order
+            order = sorted(q, key=lambda d: (q[d], d not in present, -present.get(d, 0.0), tie[d]))
+            for d in order[cap:]:
+                del q[d]
+        room = max(0, min(queue.admit_mult * K, cap - len(q)))
         for d in rank:
             if room == 0:
                 break
@@ -618,7 +625,11 @@ def test_command_line_end_to_end_and_test_split_lock(tmp_path):
     assert rc == 0
     checks = json.loads((out / "checks.json").read_text())
     assert checks["all_passed"] and checks["engine_rule_violations_total"] == 0
-    assert checks["cut_replay_equals_full_replay_prefix"] and checks["eligible_event_set_identical_in_every_cell"]
+    nf = checks["no_future_information"]
+    assert nf["passed"] and nf["score_values_changed_after_cut"] > 0 and nf["logs_that_changed"] == []
+    assert nf["families"] >= 20 and nf["primary_logs_checked_against_full_replay"] == 8
+    assert checks["eligible_event_set_identical_in_every_cell"] and checks["eligible_events_do_not_depend_on_scores"]
+    assert len(checks["eligible_event_set_sha256"]["all"]) == 64
     res = pd.read_csv(out / "cell_results.csv")
     prim = res[res["group"] == "rq1_primary"]
     assert sorted(prim["e_cell"]) == [f"E{i}" for i in range(1, 9)]
@@ -640,13 +651,187 @@ def test_command_line_end_to_end_and_test_split_lock(tmp_path):
     assert not log.duplicated(["service_date", "drive_id"]).any()
     info = json.loads((out / "run_info.json").read_text())
     assert info["exploratory"] and info["quick_smoke_test_do_not_report"] and info["protocol_sha256"]
-    # the test split is locked without the final-run switch, and can be replayed only once per folder
-    with pytest.raises(SystemExit, match="locked"):
-        run_phase5.main(["--phase4", str(p4), "--split", "test", "--population", "sample10", "--out", str(out)])
+    assert info["protocol_is_the_frozen_file"] and info["test_authorization"] is None
+
+
+# ------------------------------------------------------------------ review of 12 Nov 2026: B2, B3, B4, C1, C5
+
+def test_queue_never_exceeds_the_cap_when_capacity_falls_sharply(tmp_path):
+    # 100 drives for 4 days, then only 20: K falls from 10 to 2, the cap from 30 to 6 (review B2)
+    rng = np.random.default_rng(3)
+    recs = [{"drive_id": f"d{d:03d}", "day": t, "score": float(rng.random())}
+            for d in range(100) for t in range(12) if t < 4 or d < 20]
+    data = make_data(tmp_path, recs, D0 + timedelta(days=11))
+    spec = PolicySpec("q", budget=1000, queue=Q)
+    res = run_replay(data, ranker(data), [spec])[0]
+    cap_day, qlen = 3 * res.daily["capacity"], res.daily["queue_length"]
+    assert res.daily["capacity"][:5].tolist() == [10, 10, 10, 10, 2]
+    assert qlen[3] > cap_day[4]                                   # the old queue was larger than the new cap
+    assert (qlen <= cap_day).all() and sum(res.checks.values()) == 0
+    led = res.queue_ledger
+    cut = led["exit_reason"] == 3
+    assert cut.sum() == res.daily["removed_over_cap"].sum() > 0 and res.daily["removed_over_cap"][4] > 0
+    assert res.daily["admitted"][4] == 0                          # nothing is admitted on the day of the cut
+    assert workload(res)["queue_removed_cap_fell"] == int(cut.sum())
+    # the entries that were kept on that day are not younger than the ones that were removed
+    day4 = data.first_day + 4
+    removed_admit = led["admit_day"][cut & (led["exit_day"] == day4)]
+    later = (led["exit_day"] > day4) & (led["admit_day"] < day4)
+    assert led["admit_day"][later].max() <= removed_admit.min() + 1
+    tie = {i: int(k) for i, k in enumerate(tie_keys_drive(data.drive_key, 0))}
+    got = list(zip(res.service_day.tolist(), res.drive.tolist(), res.completed.tolist(), res.wait_days.tolist()))
+    assert got == reference_replay(data, tie, 1000, 0, Q)
+
+
+@pytest.mark.parametrize("cd", [0, 7])
+def test_small_queue_1k_2k_2d_equals_fresh_topk(tmp_path, cd):
+    # admit K, cap 2K: K entries come in and the same K are scheduled, so nothing ever waits (review note)
+    rng = np.random.default_rng(11)
+    recs = [{"drive_id": f"d{d:03d}", "day": t, "score": float(rng.integers(0, 8))}
+            for d in range(300) for t in range(40) if rng.random() > 0.05]
+    data = make_data(tmp_path, recs, D0 + timedelta(days=39))
+    small = QueueConfig(admit_mult=1, cap_mult=2, expire_days=2)
+    fresh, queued = run_replay(data, ranker(data), [PolicySpec("f", 300, cooldown_days=cd),
+                                                    PolicySpec("q", 300, cooldown_days=cd, queue=small)])
+    assert len(fresh.drive) > 100 and np.array_equal(fresh.completed, queued.completed)
+    for a, b in zip(np.split(fresh.drive, np.flatnonzero(np.diff(fresh.service_day)) + 1),
+                    np.split(queued.drive, np.flatnonzero(np.diff(queued.service_day)) + 1)):
+        assert set(a.tolist()) == set(b.tolist())                 # the same drives every day
+    assert queued.wait_days.max() == 0 and queued.daily["queue_length"].max() == 0
+
+
+def _fam(name, make, specs):
+    return {"name": name, "make_ranker": make, "specs": specs}
+
+
+def test_scramble_check_passes_for_honest_scores_and_catches_a_look_ahead(tmp_path):
+    rng = np.random.default_rng(21)
+    recs = [{"drive_id": f"d{d:03d}", "day": t, "score": float(rng.random()), "smart_count": int(rng.integers(0, 4)),
+             "label_30d": int(rng.integers(0, 2)), "fail": 58 if d < 6 else None}
+            for d in range(150) for t in range(60 if d >= 6 else 58)]
+    data = make_data(tmp_path, recs, D0 + timedelta(days=59))
+    add_derived_scores(data)
+    specs = [PolicySpec("a", 500), PolicySpec("b", 500, cooldown_days=7), PolicySpec("d", 500, cooldown_days=7, queue=Q)]
+    cut = data.first_day + 30
+    other = p5checks.scrambled_after(data, cut)
+    before = data.day <= cut
+    for k in ("ml_h30", "smart_count", "smart_count_sum"):
+        assert np.array_equal(other.scores[k][before], data.scores[k][before])          # the past is untouched
+    assert (other.scores["ml_h30"][~before] != data.scores["ml_h30"][~before]).mean() > 0.9
+    assert (other.fail_day < 0).all() and np.array_equal(other.day, data.day) and np.array_equal(other.drive, data.drive)
+    honest = [_fam("ml", lambda d, seed: ScoreRanker(d, d.scores["ml_h30"], seed), specs),
+              _fam("ewma", lambda d, seed: ScoreRanker(d, persistence_priority(
+                  d, d.scores["ml_h30"], {"name": "ewma_0.5", "kind": "ewma", "alpha": 0.5}, 7), seed), specs)]
+    ok = p5checks.no_future_information(data, honest, cut, 0)
+    assert ok["passed"] and ok["service_logs_compared"] == 6 and ok["service_log_rows_compared"] > 500
+
+    def look_ahead(d, seed):          # a broken score: the mean of the drive over the WHOLE period
+        mean = np.bincount(d.drive, d.scores["ml_h30"], d.n_drives) / np.maximum(np.bincount(d.drive, minlength=d.n_drives), 1)
+        return ScoreRanker(d, mean[d.drive], seed)
+    bad = p5checks.no_future_information(data, honest + [_fam("cheat", look_ahead, specs)], cut, 0)
+    assert not bad["passed"] and bad["logs_that_changed"] and all(x.startswith("cheat|") for x in bad["logs_that_changed"])
+
+
+def test_event_identity_key_and_independence_from_scores(tmp_path):
+    data, _ = failing_fleet(tmp_path, n=300, days=120, n_fail=20, seed=2)
+    ev = build_events(data, 7, 30, 24)
+    key = p5checks.event_key(data, ev)
+    assert len(key) == 64 and p5checks.events_do_not_depend_on_scores(data, ev, 7, 30, 24)
+    data.scores["ml_h30"] = data.scores["ml_h30"][::-1].copy()                 # other scores: same events
+    assert p5checks.event_key(data, build_events(data, 7, 30, 24)) == key
+    moved = data.fail_day.copy()
+    j = int(np.flatnonzero(moved >= 0)[0])
+    moved[j] -= 1                                                               # one failure day moves: another key
+    from dataclasses import replace
+    assert p5checks.event_key(replace(data, fail_day=moved), build_events(replace(data, fail_day=moved), 7, 30, 24)) != key
+
+
+def test_smart_count_sum_is_row_wise_and_orders_count_first(tmp_path):
+    recs = [{"drive_id": f"d{d}", "day": t, "score": 0.0, "smart_count": c, "smart_sum": s}
+            for t in range(3) for d, (c, s) in enumerate([(0, 0), (1, 5), (1, 9e11), (2, 1), (2, 2), (3, 0)])]
+    data = make_data(tmp_path, recs, D0 + timedelta(days=2))
+    add_derived_scores(data)
+    v = data.scores["smart_count_sum"]
+    day0 = v[data.day == data.first_day]
+    assert np.all(np.diff(day0[np.argsort(data.drive[data.day == data.first_day])]) > 0)   # count first, then sum
+    # row-wise: the value of a row does not change when all later rows are removed
+    short = make_data(tmp_path, [r for r in recs if r["day"] == 0], D0, name="short.parquet")
+    add_derived_scores(short)
+    assert np.array_equal(np.sort(short.scores["smart_count_sum"]), np.sort(day0))
+
+
+def test_protocol_hash_is_the_same_in_the_document_the_code_and_the_file(tmp_path):
+    import hashlib
+    import re
+    root = p5config.DEFAULT_CONFIG.parent.parent
+    raw = p5config.DEFAULT_CONFIG.read_bytes().replace(b"\r\n", b"\n")
+    frozen = p5config.FROZEN_SHA256["phase5-v1"]
+    assert hashlib.sha256(raw).hexdigest() == frozen == load_protocol().sha256 and load_protocol().is_frozen
+    doc = (root / "docs" / "phase5_protocol.md").read_text(encoding="utf-8")
+    assert re.search(r"SHA-256 of the frozen JSON: `([0-9a-f]{64})`", doc).group(1) == frozen
+    # the hash recorded by the Windows dry run is the same file with Windows line endings
+    crlf = raw.replace(b"\n", b"\r\n")
+    assert hashlib.sha256(crlf).hexdigest() == p5config.FROZEN_SHA256_CRLF_COPY["phase5-v1"]
+    win = tmp_path / "win.json"
+    win.write_bytes(crlf)
+    assert load_protocol(win).is_frozen                                         # line endings do not matter
+    changed = json.loads(raw)
+    changed["budget_per_10000"]["primary"] = 21
+    other = tmp_path / "changed.json"
+    other.write_text(json.dumps(changed), encoding="utf-8")
+    assert not load_protocol(other).is_frozen                                   # one number changed: not frozen
+    with pytest.raises(SystemExit, match="not the frozen"):
+        p5config.check_test_authorization(load_protocol(other), "sample10", tmp_path / "none.json")
+
+
+def _authorization(tmp_path, **over):
+    auth = {"protocol_sha256": p5config.FROZEN_SHA256["phase5-v1"], "review_document": "review.pdf",
+            "authorized_by": "coordinator", "test_replays_authorized": {"sample10": 1, "full_fleet": 1}}
+    auth.update(over)
+    f = tmp_path / f"auth_{len(list(tmp_path.glob('auth_*.json')))}.json"
+    f.write_text(json.dumps(auth), encoding="utf-8")
+    return f
+
+
+def test_test_split_needs_authorization_and_runs_once_whatever_the_output_folder(tmp_path):
     (tmp_path / "t").mkdir()
-    p4t, _ = phase4_like(tmp_path / "t", split="test", n=600, days=120, n_fail=30, first=date(2025, 1, 1))
-    args = ["--phase4", str(p4t), "--split", "test", "--population", "sample10", "--out", str(tmp_path / "t_out"),
-            "--quick", "--final-test-run"]
-    assert run_phase5.main(args) == 0
+    p4t, _ = phase4_like(tmp_path / "t", split="test", n=300, days=100, n_fail=20, first=date(2025, 1, 1))
+    lock = tmp_path / "register"
+    base = ["--phase4", str(p4t), "--split", "test", "--population", "sample10", "--test-lock-dir", str(lock)]
+    good = _authorization(tmp_path)
+    run = lambda out, *more: run_phase5.main(base + ["--out", str(tmp_path / out), *more])
+    with pytest.raises(SystemExit, match="locked"):                             # no switch
+        run("o1", "--authorization", str(good))
+    with pytest.raises(SystemExit, match="no authorization file"):              # switch, but no authorization
+        run("o1", "--final-test-run", "--authorization", str(tmp_path / "missing.json"))
+    with pytest.raises(SystemExit, match="--quick is refused"):
+        run("o1", "--final-test-run", "--quick", "--authorization", str(good))
+    with pytest.raises(SystemExit, match="--config is refused"):
+        run("o1", "--final-test-run", "--authorization", str(good), "--config", str(p5config.DEFAULT_CONFIG))
+    with pytest.raises(SystemExit, match="another protocol hash"):
+        run("o1", "--final-test-run", "--authorization", str(_authorization(tmp_path, protocol_sha256="0" * 64)))
+    with pytest.raises(SystemExit, match="must name"):
+        run("o1", "--final-test-run", "--authorization", str(_authorization(tmp_path, authorized_by="")))
+    with pytest.raises(SystemExit, match="does not allow"):
+        run("o1", "--final-test-run", "--authorization",
+            str(_authorization(tmp_path, test_replays_authorized={"sample10": 0, "full_fleet": 1})))
+    assert not lock.exists()                                                    # no refused attempt used the run
+    # the register is outside the output folder: a NEW output folder does not give a second run
+    auth = p5config.check_test_authorization(load_protocol(), "sample10", good)
+    reg = p5config.claim_test_replay(load_protocol(), "sample10", auth, tmp_path / "o1", lock)
+    assert len(json.loads(reg.read_text())) == 1
     with pytest.raises(SystemExit, match="already replayed"):
-        run_phase5.main(args)
+        run("o2", "--final-test-run", "--authorization", str(good))
+    with pytest.raises(SystemExit, match="already replayed"):
+        p5config.claim_test_replay(load_protocol(), "sample10", auth, tmp_path / "o3", lock)
+    p5config.claim_test_replay(load_protocol(), "full_fleet", auth, tmp_path / "o4", lock)   # counted per population
+    assert len(json.loads(reg.read_text())) == 2
+
+
+def test_validation_replay_holds_no_failure_date_after_its_outcome_window(tmp_path):
+    # a drive that fails 40 days after the last replay day: its failure date must not be kept (review B1)
+    recs = [{"drive_id": d, "day": t, "score": 0.5, "fail": f} for d, f in (("near", 25), ("far", 60), ("ok", None))
+            for t in range(20)]
+    data = make_data(tmp_path, recs, D0 + timedelta(days=19))
+    by = dict(zip(data.drive_ids.tolist(), data.fail_day.tolist()))
+    assert by["near"] == data.first_day + 25 and by["far"] < 0 and by["ok"] < 0

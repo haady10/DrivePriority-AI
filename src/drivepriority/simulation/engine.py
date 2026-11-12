@@ -46,7 +46,7 @@ class PolicyResult:
     label30: np.ndarray = None        # 1 / 0 / -1 unknown / -2 not completed
     wait_days: np.ndarray = None      # queue only: schedule day minus admission day (0 for fresh Top-K)
     daily: dict = field(default_factory=dict)          # arrays per calendar day
-    queue_ledger: dict = field(default_factory=dict)   # drive, admit_day, exit_day, exit_reason (0 scheduled, 1 expired, 2 left at the end)
+    queue_ledger: dict = field(default_factory=dict)   # drive, admit_day, exit_day, exit_reason (0 scheduled, 1 expired, 2 left at the end, 3 removed when the cap fell)
     checks: dict = field(default_factory=dict)
 
 
@@ -68,7 +68,7 @@ class _PolicyState:
         self.ledger = {k: [] for k in ("drive", "admit_day", "exit_day", "exit_reason")}
         z = lambda: np.zeros(n_days, dtype=np.int64)
         self.daily = {"observed": z(), "capacity": z(), "scheduled": z(), "completed": z(), "cancelled": z(),
-                      "queue_length": z(), "admitted": z(), "expired": z()}
+                      "queue_length": z(), "admitted": z(), "expired": z(), "removed_over_cap": z()}
         self.problems: dict[str, int] = {"scheduled_above_capacity": 0, "drive_scheduled_twice_same_day": 0,
                                          "cooldown_violations": 0, "queue_duplicate_entries": 0,
                                          "queue_above_cap_after_admission": 0, "queue_expired_entry_kept": 0,
@@ -115,18 +115,35 @@ class _PolicyState:
             if len(cand) < K and not complete:
                 return False
             picks, waits = cand[:K], np.zeros(min(K, len(cand)), dtype=np.int32)
-            admitted = expired = 0
+            admitted = expired = d_over = 0
         else:
             q = spec.queue
             qa = self.admit_day[self.queue]
             alive = (t - qa) < q.expire_days
             gone, kept, kept_a = self.queue[~alive], self.queue[alive], qa[alive]
-            room = max(0, min(q.admit_mult * K, q.cap_mult * K - len(kept)))
+            cap = q.cap_mult * K
+            over, over_a = np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int64)
+            if len(kept) > cap:
+                # Today's capacity fell so far that the waiting entries alone exceed today's cap (protocol
+                # section 8, step 1b). Keep the first `cap` entries in service order: oldest admission first,
+                # then drives observed today before absent ones, then today's ranking, then the tie key.
+                here = seen[kept] == t
+                pri, sec = np.full(len(kept), np.inf), ranker.tie_drive[kept]
+                if here.any():
+                    pri[here], sec[here] = ranker.sort_keys(row_of[kept[here]], t)
+                order = np.lexsort((sec, pri, ~here, kept_a))
+                drop = order[cap:]
+                over, over_a = kept[drop], kept_a[drop]
+                keep_idx = np.sort(order[:cap])
+                kept, kept_a = kept[keep_idx], kept_a[keep_idx]
+            room = max(0, min(q.admit_mult * K, cap - len(kept)))
             new = np.empty(0, dtype=np.int32)
             if room:
                 in_queue = self.admit_day[ranked] >= 0
                 if len(gone):
                     in_queue &= ~np.isin(ranked, gone)
+                if len(over):
+                    in_queue &= ~np.isin(ranked, over)
                 cand = ranked[~in_queue & self._eligible(ranked, t)]
                 if len(cand) < room and not complete:
                     return False
@@ -142,9 +159,10 @@ class _PolicyState:
             stay[np.flatnonzero(ok)[order]] = False
             # ---- commit
             self.admit_day[gone] = -1
+            self.admit_day[over] = -1
             self.admit_day[new] = t
             self.admit_day[picks] = -1
-            for arr, reason, day_a in ((gone, 1, qa[~alive]), (picks, 0, a_ok[order])):
+            for arr, reason, day_a in ((gone, 1, qa[~alive]), (over, 3, over_a), (picks, 0, a_ok[order])):
                 if len(arr):
                     self.ledger["drive"].append(arr)
                     self.ledger["admit_day"].append(day_a.astype(np.int32))
@@ -152,9 +170,10 @@ class _PolicyState:
                     self.ledger["exit_reason"].append(np.full(len(arr), reason, dtype=np.int8))
             self.queue = members[stay]
             admitted, expired = len(new), len(gone)
+            d_over = len(over)
             if len(np.unique(members)) != len(members):
                 self.problems["queue_duplicate_entries"] += 1
-            if len(members) > max(q.cap_mult * K, len(kept)):
+            if len(members) > cap:
                 self.problems["queue_above_cap_after_admission"] += 1
             if len(self.queue) and np.any((t - self.admit_day[self.queue]) >= q.expire_days):
                 self.problems["queue_expired_entry_kept"] += 1
@@ -168,6 +187,7 @@ class _PolicyState:
         d = self.daily
         d["observed"][i], d["capacity"][i], d["scheduled"][i] = n, K, len(picks)
         d["queue_length"][i], d["admitted"][i], d["expired"][i] = len(self.queue), admitted, expired
+        d["removed_over_cap"][i] = d_over
         return True
 
     def depth_needed(self, n: int) -> int:

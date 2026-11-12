@@ -8,7 +8,9 @@ Typical use (validation year, 10% evaluation sample from Phase 4):
     python -m drivepriority.simulation.run_phase5 --phase4 <04_Phase4_FINAL folder with h30, h14, h7> ^
         --split valid --population sample10 --out <output folder>
 
-The test split is locked: it needs --final-test-run and can be replayed only once per output folder.
+The test split is locked. It needs --final-test-run, the frozen protocol file, a committed authorization
+file (configs/phase5_test_authorization.json, written after the independent review) and a free place in
+the lock register of this machine. --quick is refused on the test split.
 --quick is for smoke tests only (2 tie seeds, few bootstrap resamples, no fleet-half reruns); its
 results must never be reported.
 """
@@ -26,7 +28,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .config import Protocol, QueueConfig, load_protocol
+from .checks import build_families, event_key, events_do_not_depend_on_scores, no_future_information
+from .config import Protocol, QueueConfig, check_test_authorization, claim_test_replay, load_protocol
 from .engine import PolicyResult, PolicySpec, run_replay
 from .events import EventTable, build_events, event_outcomes, workload
 from .hashing import in_subsample
@@ -58,6 +61,7 @@ class Cell:
     fleet: str = "all"
     per_seed: list = field(default_factory=list)
     capture_sum: np.ndarray = None          # per eligible event: number of seeds with a timely capture
+    events_key: str = ""                    # identity of the eligible events this cell was judged on
     first: PolicyResult = None              # seed 0 replay (kept only when asked)
     first_outcomes: dict = None
     checks: dict = field(default_factory=dict)
@@ -175,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", help="protocol JSON (default: configs/phase5_protocol_v1.json)")
     ap.add_argument("--final-test-run", action="store_true",
                     help="unlock the test split (once, after the independent review)")
+    ap.add_argument("--authorization", help="test authorization JSON (default: configs/phase5_test_authorization.json)")
+    ap.add_argument("--test-lock-dir", help="folder of the test-replay lock register (default: ~/.drivepriority)")
     ap.add_argument("--quick", action="store_true", help="smoke test only; results must not be reported")
     ap.add_argument("--drive-info", help="optional CSV: drive_id plus group columns (model, manufacturer, ...)")
     ap.add_argument("--duckdb-memory", default="4GB")
@@ -188,15 +194,24 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     first_day, last_day = proto.split_days(a.split)
     lock = out / "TEST_REPLAY_LOCK.json"
+    auth = register = None
     if a.split == "test":
         if not a.final_test_run:
             raise SystemExit("The test split is locked. It is replayed once, after the independent review, "
                              "with --final-test-run.")
+        if a.quick:
+            raise SystemExit("--quick is refused on the test split: the test replay is the full frozen run, once.")
+        if a.config:
+            raise SystemExit("--config is refused on the test split: the test replay uses the frozen protocol file.")
         if lock.exists():
             raise SystemExit(f"The test year was already replayed into this folder ({lock}). A second replay is a "
                              f"deviation: log it in docs/phase5_protocol.md section 19 and use a new output folder.")
+        auth = check_test_authorization(proto, a.population, a.authorization)
+        register = claim_test_replay(proto, a.population, auth, out, a.test_lock_dir)
         lock.write_text(json.dumps({"started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                                    "protocol_sha256": proto.sha256, "quick": a.quick}, indent=2), encoding="utf-8")
+                                    "protocol_sha256": proto.sha256, "population": a.population,
+                                    "authorization_sha256": auth["sha256"], "lock_register": str(register)},
+                                   indent=2), encoding="utf-8")
 
     # ------------------------------------------------------------------ 1. replay input
     if a.input:
@@ -237,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     def run_source(group, source, values, specs, tie_mode, *, rule="daily", fleet="all", dat=data, evs=events,
                    with_trackers=False, keep_first=False, groups=None):
         cells = [Cell(group=(groups[j] if groups else group), source=source, rule=rule, spec=s,
-                      tie_mode=tie_mode, fleet=fleet) for j, s in enumerate(specs)]
+                      tie_mode=tie_mode, fleet=fleet, events_key=event_key(dat, evs)) for j, s in enumerate(specs)]
         tr = run_pass(dat, evs, proto, lambda seed: ScoreRanker(dat, values, seed, tie_mode), cells, seeds,
                       trackers if with_trackers else None, keep_first)
         all_cells.extend(cells)
@@ -309,8 +324,8 @@ def main(argv: list[str] | None = None) -> int:
         if source != proto.ml:
             rq3_cells += run_source("rq3", source, data.scores[source], policies_for(B, cd, [None]), proto.tie_mode)
     if len(rq3_scores) == 3:
-        cells = [Cell(group="rq3", source="urgency_first_7_14_30", rule="daily", spec=s, tie_mode=proto.tie_mode)
-                 for s in policies_for(B, cd, [None])]
+        cells = [Cell(group="rq3", source="urgency_first_7_14_30", rule="daily", spec=s, tie_mode=proto.tie_mode,
+                      events_key=event_key(data, events)) for s in policies_for(B, cd, [None])]
         run_pass(data, events, proto, lambda seed: InterleaveRanker(
             [ScoreRanker(data, data.scores[s], seed, proto.tie_mode) for s in ("ml_h7", "ml_h14", "ml_h30")]),
             cells, seeds)
@@ -434,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
             pd.DataFrame({"drive_id": data.drive_ids[led["drive"]],
                           "admit_date": [to_date(d) for d in led["admit_day"]],
                           "exit_date": [to_date(d) for d in led["exit_day"]],
-                          "exit_reason": np.array(["scheduled", "expired", "left_at_end"])[led["exit_reason"]]}
+                          "exit_reason": np.array(["scheduled", "expired", "left_at_end", "removed_cap_fell"])[led["exit_reason"]]}
                          ).to_parquet(out / f"queue_ledger_{name}.parquet", index=False)
         if daily is None:
             daily = pd.DataFrame({"date": [to_date(data.first_day + i) for i in range(data.n_days)],
@@ -462,27 +477,31 @@ def main(argv: list[str] | None = None) -> int:
     for c in all_cells:
         for k, v in c.checks.items():
             problems[k] = problems.get(k, 0) + v
-    half = data.first_day + data.n_days // 2          # a replay cut in the middle must equal the full one up to there
-    prefix_ok = True
-    for k in (("ml", "cool", "fresh"), ("smart", "cool", "queue")):
-        c = primary[k]
-        src = proto.ml if k[0] == "ml" else proto.smart
-        cut = run_replay(data, ScoreRanker(data, data.scores[src], seeds[0], proto.tie_mode), [c.spec],
-                         stop_after_day=half)[0]
-        m = c.first.decision_day <= half
-        prefix_ok &= (np.array_equal(cut.drive, c.first.drive[m]) and np.array_equal(cut.completed, c.first.completed[m]))
-    same_events = len({r["eligible_events"] for r in rows if r["fleet"] == "all"}) == 1
+    # no future information: scores and labels after the middle day are scrambled, decisions up to it must not move
+    half = data.first_day + data.n_days // 2
+    print("  no-future-information check: every policy family on a copy with the later rows scrambled ...", flush=True)
+    full_logs = {f"primary_{k[0]}|{c.spec.name}": c.first for k, c in primary.items()}
+    nofut = no_future_information(data, build_families(proto, data, policies_for), half, seeds[0], full_logs)
+    keys_by_fleet: dict = {}
+    for c in all_cells:
+        keys_by_fleet.setdefault(c.fleet, set()).add(c.events_key)
+    same_events = (all(len(v) == 1 and "" not in v for v in keys_by_fleet.values())
+                   and len({r["eligible_events"] for r in rows if r["fleet"] == "all"}) == 1)
+    events_clean = events_do_not_depend_on_scores(data, events, e["lead_min"], e["lead_max"], e["full_opportunity_days"])
     cov_ok = bool(((res["coverage"] >= 0) & (res["coverage"] <= 1)).all())
+    all_ok = bool(sum(problems.values()) == 0 and same_events and events_clean and cov_ok and nofut["passed"])
     checks = {
         "engine_rule_violations": problems,
         "engine_rule_violations_total": int(sum(problems.values())),
         "eligible_event_set_identical_in_every_cell": bool(same_events),
+        "eligible_event_set_sha256": {f: sorted(v)[0] for f, v in keys_by_fleet.items()},
+        "eligible_events_do_not_depend_on_scores": bool(events_clean),
         "coverage_between_0_and_1": cov_ok,
-        "cut_replay_equals_full_replay_prefix": bool(prefix_ok),
+        "no_future_information": nofut,
         "input_no_rows_on_or_after_failure_day": True,     # load_replay_input stops otherwise
         "input_no_duplicate_drive_days": True,             # load_replay_input stops otherwise
         "events": events.counts(),
-        "all_passed": bool(sum(problems.values()) == 0 and same_events and cov_ok and prefix_ok),
+        "all_passed": all_ok,
     }
     (out / "checks.json").write_text(json.dumps(checks, indent=2), encoding="utf-8")
 
@@ -492,9 +511,11 @@ def main(argv: list[str] | None = None) -> int:
         "what_this_is": "Decision-support simulation of inspection slots. Simulated inspections only; "
                         "no claim that failures are prevented.",
         "split": a.split, "population": a.population,
-        "exploratory": a.population != "full_fleet" or a.quick,
+        "exploratory": a.population != "full_fleet" or a.quick or not proto.is_frozen,
         "quick_smoke_test_do_not_report": a.quick,
         "protocol_version": proto.raw["protocol_version"], "protocol_sha256": proto.sha256,
+        "protocol_is_the_frozen_file": proto.is_frozen,
+        "test_authorization": auth, "test_lock_register": str(register) if register else None,
         "protocol": proto.raw, "tie_seeds_used": seeds, "bootstrap_reps_used": boot["reps"],
         "input": str(in_path), "input_sha256": sha256_file(in_path) if in_path.is_file() else None,
         "prepare_manifest": prep,
@@ -508,8 +529,9 @@ def main(argv: list[str] | None = None) -> int:
     (out / "run_info.json").write_text(json.dumps(info, indent=2, default=str), encoding="utf-8")
     if a.split == "test":
         lock.write_text(json.dumps({"finished_utc": info["created_utc"], "protocol_sha256": proto.sha256,
-                                    "quick": a.quick, "all_checks_passed": checks["all_passed"]}, indent=2),
-                        encoding="utf-8")
+                                    "population": a.population, "authorization_sha256": auth["sha256"],
+                                    "lock_register": str(register), "all_checks_passed": checks["all_passed"]},
+                                   indent=2), encoding="utf-8")
 
     show = res[res["group"] == "rq1_primary"][["e_cell", "score", "reinspection", "scheduling", "coverage",
                                                 "coverage_ci_low", "coverage_ci_high", "repeat_share",

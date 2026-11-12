@@ -54,20 +54,41 @@ If it prints `CHECKS FAILED`, the results must not be used: send `checks.json` t
 
 ## 4. Test replay (2025 to June 2026): once only
 
-Only after the independent review and after the coordinator says so:
+Only after the independent review accepts the work and the coordinator says so. The code refuses the test split
+unless all of these are true:
+
+1. The switch `--final-test-run` is given. `--quick` and `--config` are refused.
+2. The protocol file is the frozen one (the code checks its hash).
+3. The file `configs/phase5_test_authorization.json` exists and is committed. The coordinator writes it after
+   the review:
+
+```
+{
+  "protocol_sha256": "22110661c20a838c709c9712249a36dfba6feef84291fd9316cbe66b8fa60af6",
+  "review_document": "<file name of the accepted review>",
+  "authorized_by": "<name>",
+  "authorized_on": "<date>",
+  "test_replays_authorized": {"sample10": 1, "full_fleet": 1}
+}
+```
+
+4. The test split was not replayed before on this machine for the same population. The register is in
+   `~/.drivepriority/` (outside the output folder), so a new output folder does not give a second run.
 
 ```
 python -m drivepriority.simulation.run_phase5 --phase4 "<Phase 4 folder>" --split test --population sample10 --out "<new empty folder>" --final-test-run
 ```
 
-The code refuses the test split without `--final-test-run`, and refuses a second test replay into the same
-folder. Any repeat is a deviation and must be logged in `docs/phase5_protocol.md` section 19.
+The register cannot see other machines. Run the test replay on one machine only and commit its `run_info.json`.
+Any repeat is a deviation and must be logged in `docs/phase5_protocol.md` section 19.
 
 ## 5. Full fleet (primary results, rule R18)
 
 The replay accepts any table with the columns listed in `src/drivepriority/simulation/replay_input.py`
-through `--input <file or folder> --population full_fleet`. The full-fleet scoring job that writes that table
-(features for all HDDs, scored with the saved Phase 4 DRF models) runs on the lab PC and is a separate step.
+through `--input <file or folder> --population full_fleet`. The full-fleet job writes that table in two steps
+(`python -m drivepriority.simulation.full_fleet features ...` then `... score ...`; see the top of
+`src/drivepriority/simulation/full_fleet.py`). A validation build reads no snapshot row after 31 January 2025
+(validation end + 31 days, the outcome window of the last validation day).
 
 ## Rules
 

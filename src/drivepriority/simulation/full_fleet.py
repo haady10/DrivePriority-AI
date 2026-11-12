@@ -20,7 +20,9 @@ Two steps, run one after the other on the PC that holds the snapshot:
 Then:  python -m drivepriority.simulation.run_phase5 --input <out>/replay_<split> --split <split>
            --population full_fleet --out <results folder>
 
-The snapshot is read-only. The test split needs --final-test-run, like the replay itself.
+The snapshot is read-only. A validation build reads no row later than valid_end + 31 days (the outcome
+window of the last validation day). The test split needs --final-test-run and the committed authorization
+file, like the replay itself.
 """
 from __future__ import annotations
 
@@ -34,7 +36,8 @@ from pathlib import Path
 from drivepriority.features.build_dataset import HORIZONS, feature_definitions
 from drivepriority.features.common import (DRIVE_ID_SQL, MODEL_ATTRS, SMART_RULE_ATTRS, connect,
                                            create_source_view, run_metadata, write_json)
-from drivepriority.simulation.replay_input import PRIMARY_MODEL, RUNNER_UP_30, sha256_file
+from drivepriority.simulation.config import check_test_authorization, load_protocol
+from drivepriority.simulation.replay_input import OUTCOME_DAYS, PRIMARY_MODEL, RUNNER_UP_30, sha256_file
 
 LOOKBACK_DAYS = 31          # the longest feature window is 30 days back
 NORM = "regexp_replace(trim(coalesce(model, '')), '\\s+', ' ', 'g')"
@@ -68,18 +71,22 @@ def split_bounds(manifest: dict, split: str) -> tuple[date, date]:
     return ends["valid"] + timedelta(days=1), ends["test"]
 
 
-def _lock(split: str, final: bool) -> None:
+def _lock(split: str, final: bool, authorization: str | None = None) -> dict | None:
+    """Validation needs nothing. The test split needs --final-test-run AND the committed authorization file."""
     if split not in ("valid", "test"):
         raise SystemExit(f"Unknown split: {split}")
-    if split == "test" and not final:
+    if split != "test":
+        return None
+    if not final:
         raise SystemExit("The test split is locked. Use --final-test-run only for the final run after the "
                          "independent review.")
+    return check_test_authorization(load_protocol(), "full_fleet", authorization)
 
 
 # ====================================================================== step 1: features
 
 def build_features(a) -> int:
-    _lock(a.split, a.final_test_run)
+    auth = _lock(a.split, a.final_test_run, a.authorization)
     t0 = time.time()
     out = Path(a.out).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -103,14 +110,18 @@ def build_features(a) -> int:
     con.execute("CREATE TEMP TABLE registry(model_norm VARCHAR, device_type VARCHAR)")
     con.executemany("INSERT INTO registry VALUES (?, ?)", list(types.items()))
 
-    print("[1/3] Drive table over the whole snapshot (first seen, last seen, first failure) ...", flush=True)
+    # Reading boundary. A row of day t is labelled by what happens up to t + 30 (and the replay judges a
+    # decision by failures up to t + 31), so the outcome window of the last day ends OUTCOME_DAYS later.
+    # Nothing after that day is read: a validation build never touches later test-period rows.
     test_end = date.fromisoformat(manifest["splits"]["test_end"])
+    read_until = min(last + timedelta(days=OUTCOME_DAYS), test_end)
+    print(f"[1/3] Drive table from rows up to {read_until} (first seen, last seen, first failure) ...", flush=True)
     con.execute(f"""
         CREATE TEMP TABLE drives AS
         SELECT drive_id, any_value(serial_number) AS serial_number, any_value(model) AS model,
                min(date) AS first_seen, max(date) AS last_seen,
                min(date) FILTER (WHERE failure = 1) AS fail_date
-        FROM src WHERE date <= DATE '{test_end}' GROUP BY drive_id""")
+        FROM src WHERE date <= DATE '{read_until}' GROUP BY drive_id""")
     ext_first = first - timedelta(days=LOOKBACK_DAYS)
     unknown = [r[0] for r in con.execute(f"""
         SELECT DISTINCT {NORM} FROM drives
@@ -220,6 +231,7 @@ def build_features(a) -> int:
     write_json(out / f"features_{a.split}_manifest.json", {
         "what": "Full-fleet Phase 3 features for the Phase 5 replay (rule R18); HDD-only",
         "split": a.split, "first_day": str(first), "last_day": str(last), "rows": total_rows,
+        "snapshot_rows_read_until": str(read_until), "test_authorization": auth,
         "hdd_drives": n_hdd, "feature_columns": feature_names, "registry_sha256": reg_sha,
         "phase3_manifest_sha256": sha256_file(p3 / "phase3_manifest.json"),
         "sample_reconciliation": {"file": sample_file.name, "sha256": sha256_file(sample_file),
@@ -241,7 +253,7 @@ def score_features(a) -> int:
 
     from drivepriority.models.train_h2o import EXCLUDED_FEATURES
 
-    _lock(a.split, a.final_test_run)
+    _lock(a.split, a.final_test_run, a.authorization)
     t0 = time.time()
     feat_dir = Path(a.features).expanduser().resolve(strict=True)
     p4 = Path(a.phase4).expanduser().resolve(strict=True)
@@ -389,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--only", nargs="*", help="only these quarters, e.g. 2024Q1 (testing)")
     f.add_argument("--allow-mismatch", action="store_true", help="debugging only: do not stop on a failed sample check")
     f.add_argument("--final-test-run", action="store_true")
+    f.add_argument("--authorization", help="test authorization JSON (default: configs/phase5_test_authorization.json)")
     f.set_defaults(func=build_features)
     s = sub.add_parser("score", help="step 2: score with the saved Phase 4 models (H2O)")
     s.add_argument("--features", required=True, help="output folder of the features step")
@@ -402,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--only", nargs="*", help="only these months, e.g. 2024-01 (testing)")
     s.add_argument("--no-reconcile", action="store_true", help="skip the check against Phase 4 sample scores")
     s.add_argument("--final-test-run", action="store_true")
+    s.add_argument("--authorization", help="test authorization JSON (default: configs/phase5_test_authorization.json)")
     s.set_defaults(func=score_features)
     a = ap.parse_args(argv)
     return a.func(a)

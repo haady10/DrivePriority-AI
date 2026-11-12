@@ -139,6 +139,7 @@ def workload(res: PolicyResult) -> dict:
             "queue_max_wait_days": int(w.max()) if len(w) else 0,
             "queue_share_waited": float((w > 0).mean()) if len(w) else float("nan"),
             "queue_expired": int((led["exit_reason"] == 1).sum()),
+            "queue_removed_cap_fell": int((led["exit_reason"] == 3).sum()),
             "queue_mean_length": float(d["queue_length"][d["observed"] > 0].mean()),
             "queue_max_length": int(d["queue_length"].max()),
         })

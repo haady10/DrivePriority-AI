@@ -36,6 +36,8 @@ RUNNER_UP_30 = "gbm"
 EPOCH = date(1970, 1, 1)
 OUTCOME_COLUMNS = ("fail_date", "label_7d", "label_14d", "label_30d")
 NO_FAIL = -1
+COUNT_STEP = float(2 ** 49)   # see add_derived_scores
+OUTCOME_DAYS = 31              # a decision on day t is judged by failures up to t + 31 (inspect t+1, 30-day lead)
 
 
 def day_number(d: date) -> int:
@@ -233,6 +235,9 @@ def load_replay_input(path: Path, first_day: date, last_day: date) -> ReplayData
     if len(day) and (day[0] < d0 or day[-1] > d1):
         raise SystemExit(f"Replay input has dates outside {first_day}..{last_day}; stopping")
 
+    # Failure dates later than the outcome window of the last decision day are not needed for any result of
+    # this split. They are dropped here, so a validation replay never holds a later (test-period) failure date.
+    fail_row = np.where(fail_row > d1 + OUTCOME_DAYS, NO_FAIL, fail_row).astype(fail_row.dtype)
     n_drives = len(drive_ids)
     fail_day = np.full(n_drives, NO_FAIL, dtype=np.int32)
     fail_day[drive] = fail_row
@@ -252,13 +257,15 @@ def load_replay_input(path: Path, first_day: date, last_day: date) -> ReplayData
 def add_derived_scores(data: ReplayData) -> None:
     """Add the score sources that are simple functions of the columns (protocol section 5).
 
-    smart_count_sum: SMART count first, the raw counter sum only decides inside equal counts.
+    smart_count_sum: SMART count first, the raw counter sum only decides inside equal counts (row-wise formula).
     random:          a fixed pseudo-random number per drive and day (the no-skill reference).
     """
     if "smart_sum" in data.scores and "smart_count_sum" not in data.scores:
+        # A fixed formula per row (no ranking over the period, so no later row can influence an earlier one):
+        # count * 2^49 + (sum + 1). Sums are whole numbers below 2^49, so the value is exact in float64 and
+        # orders rows by count first and by sum inside equal counts. A missing sum counts as below zero.
         s = np.nan_to_num(data.scores["smart_sum"], nan=-1.0)
-        _, dense = np.unique(s, return_inverse=True)                  # order of the sums, ties kept as ties
-        data.scores["smart_count_sum"] = data.scores["smart_count"] + 0.5 * dense / (dense.max() + 1.0)
+        data.scores["smart_count_sum"] = data.scores["smart_count"] * COUNT_STEP + np.clip(s + 1.0, 0.0, COUNT_STEP - 1.0)
     if "random" not in data.scores:
         mixed = splitmix64(data.drive_key[data.drive] ^ splitmix64(data.day.astype(np.uint64) + np.uint64(777)))
         data.scores["random"] = unit_float(mixed)
