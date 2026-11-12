@@ -39,7 +39,7 @@ def connect(memory_limit: str, temp_dir: str | Path, threads: int | None = None)
     Path(temp_dir).mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{memory_limit}'")
-    con.execute(f"SET temp_directory='{Path(temp_dir).as_posix()}'")
+    con.execute(f"SET temp_directory='{Path(temp_dir).as_posix().replace(chr(39), chr(39) * 2)}'")
     con.execute("SET preserve_insertion_order=false")
     if threads:
         con.execute(f"SET threads={int(threads)}")
@@ -65,7 +65,7 @@ def create_source_view(con: duckdb.DuckDBPyConnection, snapshot: str | Path) -> 
     """
     glob = snapshot_glob(snapshot)
     con.execute(
-        f"CREATE OR REPLACE VIEW src_raw AS SELECT * FROM read_parquet('{glob}', union_by_name=true)"
+        f"CREATE OR REPLACE VIEW src_raw AS SELECT * FROM read_parquet('{glob.replace(chr(39), chr(39) * 2)}', union_by_name=true)"
     )
     cols = [r[0] for r in con.execute("DESCRIBE src_raw").fetchall()]
     for required in ("date", "serial_number", "model", "failure"):

@@ -897,3 +897,12 @@ def test_validation_replay_holds_no_failure_date_after_its_outcome_window(tmp_pa
     data = make_data(tmp_path, recs, D0 + timedelta(days=19))
     by = dict(zip(data.drive_ids.tolist(), data.fail_day.tolist()))
     assert by["near"] == data.first_day + 25 and by["far"] < 0 and by["ok"] < 0
+
+
+def test_prepare_input_works_when_a_folder_name_has_an_apostrophe(tmp_path):
+    """Found by the Mac re-run on 12 Nov 2026: OneDrive folder "Name's files" broke the SQL path quoting."""
+    root = tmp_path / "Azeekkal's files - DrivePriority-AI-Team"
+    root.mkdir()
+    p4, n_rows = phase4_like(root)
+    man = prepare_from_phase4(p4, "valid", root / "out" / "replay_valid.parquet", D0, date(2024, 12, 31))
+    assert man["rows"] == n_rows and (root / "out" / "replay_valid.parquet").is_file()

@@ -233,3 +233,21 @@ def test_full_fleet_scores_equal_phase4_on_sample_drives_and_feed_the_replay(tmp
     assert run_phase5.main(["--input", str(out / "replay_valid"), "--split", "valid", "--population", "full_fleet",
                             "--out", str(res), "--config", str(cfg), "--quick"]) == 0
     assert json.loads((res / "checks.json").read_text())["all_passed"]
+
+
+def test_folders_with_an_apostrophe_in_their_name_work(tmp_path):
+    """A OneDrive folder like "Name's files" broke the SQL path quoting (found by the Mac re-run, 12 Nov 2026)."""
+    from drivepriority.simulation.replay_input import sq
+    assert sq(tmp_path / "A'B" / "x.parquet").endswith("A''B/x.parquet")
+    import shutil
+    snap0, hdd0, reg0 = phase3_hdd(tmp_path)               # Phase 3 code is frozen: build the fake data normally,
+    root = tmp_path / "Azeekkal's files"                    # then run the Phase 5 code on copies in a quoted folder
+    root.mkdir()
+    snap, hdd, reg = root / "snap", root / "p3_hdd", root / "registry.csv"
+    shutil.copytree(snap0, snap)
+    shutil.copytree(hdd0, hdd)
+    shutil.copy(reg0, reg)
+    rc, out = run_features(root, snap, hdd, reg)
+    assert rc == 0
+    man = json.loads((out / "features_valid_manifest.json").read_text())
+    assert man["sample_reconciliation"]["passed"] and man["sample_reconciliation"]["rows_checked"] > 10_000

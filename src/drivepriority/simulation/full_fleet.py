@@ -37,7 +37,7 @@ from drivepriority.features.build_dataset import HORIZONS, feature_definitions
 from drivepriority.features.common import (DRIVE_ID_SQL, MODEL_ATTRS, SMART_RULE_ATTRS, connect,
                                            create_source_view, run_metadata, write_json)
 from drivepriority.simulation.config import check_test_authorization, load_protocol
-from drivepriority.simulation.replay_input import OUTCOME_DAYS, PRIMARY_MODEL, RUNNER_UP_30, sha256_file
+from drivepriority.simulation.replay_input import OUTCOME_DAYS, PRIMARY_MODEL, RUNNER_UP_30, sha256_file, sq
 
 LOOKBACK_DAYS = 31          # the longest feature window is 30 days back
 NORM = "regexp_replace(trim(coalesce(model, '')), '\\s+', ' ', 'g')"
@@ -205,8 +205,8 @@ def build_features(a) -> int:
                   FROM feat
                   WHERE date BETWEEN DATE '{qa}' AND DATE '{qb}' AND (fail_date IS NULL OR date < fail_date)
                   ORDER BY date, drive_id)
-            TO '{f_out.as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
-        rows, drives_q = con.execute(f"SELECT count(*), count(DISTINCT drive_id) FROM read_parquet('{f_out.as_posix()}')").fetchone()
+            TO '{sq(f_out)}' (FORMAT parquet, COMPRESSION zstd)""")
+        rows, drives_q = con.execute(f"SELECT count(*), count(DISTINCT drive_id) FROM read_parquet('{sq(f_out)}')").fetchone()
         # ---- reconciliation with the Phase 3 sample (same drive-days must carry identical values)
         # One difference is expected and allowed, and it is counted openly: a drive that vanishes from the data
         # and returns after the reading boundary. Phase 3 read the later rows and labelled the day 0; this build
@@ -221,9 +221,9 @@ def build_features(a) -> int:
         n_s, n_found, n_diff, n_unk = con.execute(f"""
             SELECT count(*), count(f.drive_id), count(*) FILTER (WHERE f.drive_id IS NOT NULL AND ({diff})),
                    count(*) FILTER (WHERE f.drive_id IS NOT NULL AND NOT ({diff}) AND ({unk}))
-            FROM (SELECT * FROM read_parquet('{sample_file.as_posix()}')
+            FROM (SELECT * FROM read_parquet('{sq(sample_file)}')
                   WHERE date BETWEEN DATE '{qa}' AND DATE '{qb}') p
-            LEFT JOIN read_parquet('{f_out.as_posix()}') f USING (drive_id, date)""").fetchone()
+            LEFT JOIN read_parquet('{sq(f_out)}') f USING (drive_id, date)""").fetchone()
         checked, missing, different = checked + n_s, missing + (n_s - n_found), different + n_diff
         unknown_labels += n_unk
         total_rows += rows
@@ -304,7 +304,7 @@ def score_features(a) -> int:
         raise SystemExit("The feature files do not hold the model inputs in the trained order; stopping")
     feat_sql = ", ".join(f'CAST("{c}" AS DOUBLE) AS "{c}"' for c in features)
     rule_count = " + ".join(f"CAST(coalesce(smart_{x}_raw > 0, FALSE) AS INTEGER)" for x in SMART_RULE_ATTRS)
-    glob = (feat_dir / f"features_{a.split}_*.parquet").as_posix()
+    glob = sq(feat_dir / f"features_{a.split}_*.parquet")
     sample = {col: p4 / f"h{h}" / f"scores_{a.split}.parquet" for col, (h, _) in wanted.items()}
     sample = {c: f for c, f in sample.items() if f.is_file()}
     if not sample and not a.no_reconcile:
@@ -313,7 +313,7 @@ def score_features(a) -> int:
 
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{a.duckdb_memory}'")
-    con.execute(f"SET temp_directory='{(out / '_duckdb_tmp').as_posix()}'")
+    con.execute(f"SET temp_directory='{sq(out / '_duckdb_tmp')}'")
     report, total = [], 0
     print("[1/2] Starting H2O and loading the saved models ...", flush=True)
     try:
@@ -335,7 +335,7 @@ def score_features(a) -> int:
             if n == 0:
                 continue
             con.execute(f"""COPY (SELECT row_id, {feat_sql} FROM m ORDER BY row_id)
-                            TO '{tmp.as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
+                            TO '{sq(tmp)}' (FORMAT parquet, COMPRESSION zstd)""")
             frame = h2o.import_file(tmp.as_posix())
             scores = None
             for col, model in models.items():
@@ -357,16 +357,16 @@ def score_features(a) -> int:
                              CAST(m.smart_rule_score AS DOUBLE) AS smart_sum,
                              {', '.join(f's.{c}' for c in wanted)}
                       FROM m JOIN scores_df s USING (row_id) ORDER BY m.date, m.drive_id)
-                TO '{part.as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
+                TO '{sq(part)}' (FORMAT parquet, COMPRESSION zstd)""")
             con.unregister("scores_df")
             rec = {"month": name, "rows": n, "file": part.name, "sha256": sha256_file(part)}
             for col, f in sample.items():          # sample drives: new score against the Phase 4 score
                 h, mname = wanted[col]
                 n_s, n_found, worst = con.execute(f"""
                     SELECT count(*), count(r.drive_id), max(abs(p.score - r.{col}))
-                    FROM (SELECT drive_id, date, score FROM read_parquet('{f.as_posix()}')
+                    FROM (SELECT drive_id, date, score FROM read_parquet('{sq(f)}')
                           WHERE model = '{mname}' AND date BETWEEN DATE '{ma}' AND DATE '{mb}') p
-                    LEFT JOIN read_parquet('{part.as_posix()}') r USING (drive_id, date)""").fetchone()
+                    LEFT JOIN read_parquet('{sq(part)}') r USING (drive_id, date)""").fetchone()
                 rec[f"{col}_sample_rows"], rec[f"{col}_sample_missing"] = n_s, n_s - n_found
                 rec[f"{col}_max_abs_difference"] = worst
                 if (n_s - n_found) or (worst is not None and worst > SCORE_TOLERANCE):

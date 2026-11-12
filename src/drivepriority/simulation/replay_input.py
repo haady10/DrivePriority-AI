@@ -40,6 +40,11 @@ COUNT_STEP = float(2 ** 49)   # see add_derived_scores
 OUTCOME_DAYS = 31              # a decision on day t is judged by failures up to t + 31 (inspect t+1, 30-day lead)
 
 
+def sq(path) -> str:
+    """A file path made safe inside a single-quoted SQL string (a quote in a folder name is doubled)."""
+    return Path(path).as_posix().replace("'", "''")
+
+
 def day_number(d: date) -> int:
     """Days since 1970-01-01 (the integer form of a date used everywhere in the replay)."""
     return (d - EPOCH).days
@@ -78,9 +83,9 @@ def prepare_from_phase4(phase4_dir: Path, split: str, out_path: Path, first_day:
 
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{duckdb_memory}'")
-    con.execute(f"SET temp_directory='{(out_path.parent / '_duckdb_tmp').as_posix()}'")
+    con.execute(f"SET temp_directory='{sq(out_path.parent / '_duckdb_tmp')}'")
     for h in have:
-        con.execute(f"CREATE TEMP VIEW s{h} AS SELECT * FROM read_parquet('{files[h].as_posix()}')")
+        con.execute(f"CREATE TEMP VIEW s{h} AS SELECT * FROM read_parquet('{sq(files[h])}')")
     models30 = {r[0] for r in con.execute("SELECT DISTINCT model FROM s30").fetchall()}
     if PRIMARY_MODEL[30] not in models30:
         raise SystemExit(f"The 30-day file has no '{PRIMARY_MODEL[30]}' scores; found {sorted(models30)}")
@@ -139,7 +144,7 @@ def prepare_from_phase4(phase4_dir: Path, split: str, out_path: Path, first_day:
         raise SystemExit("Replay input NOT written. Problems found in the Phase 4 score files: " + "; ".join(problems))
 
     con.execute(f"""COPY (SELECT * FROM replay ORDER BY date, drive_id)
-                    TO '{out_path.as_posix()}' (FORMAT parquet, COMPRESSION zstd)""")
+                    TO '{sq(out_path)}' (FORMAT parquet, COMPRESSION zstd)""")
     con.close()
     manifest = {
         "split": split, "rows": n, "drives": n_drives, "drives_with_failure_date": n_fail,
