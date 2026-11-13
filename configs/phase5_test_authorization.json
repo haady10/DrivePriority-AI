@@ -1,0 +1,7 @@
+{
+  "protocol_sha256": "22110661c20a838c709c9712249a36dfba6feef84291fd9316cbe66b8fa60af6",
+  "review_document": "docs/phase5_review_validation_fullfleet_2026-11-13.md",
+  "authorized_by": "Haady Abdul Jabar (coordinator)",
+  "authorized_on": "2026-11-13",
+  "test_replays_authorized": {"sample10": 0, "full_fleet": 1}
+}
