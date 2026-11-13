@@ -11,8 +11,8 @@ sample), scoring with the saved Phase 4 models, replay 2,401 s.
 
 Files here: `run_info.json`, `checks.json`, `TEST_REPLAY_LOCK.json`, `cell_results.csv`, `rq1_contrasts.csv`,
 `rq2_stability.csv`, `rq3_horizons.csv` (test), `validation_run_info.json` (2024). Logs, service logs and
-parquet files are in OneDrive `05_Phase5_RESULTS`. Still to add from the lab PC: the register entry
-(`~/.drivepriority/phase5_test_replays_22110661c20a838c.json`) and `replay_test_hashes.txt` (run_info has
+parquet files are in OneDrive `05_Phase5_RESULTS`. Register entry: `lock_register_entry.json`; input hashes: `input_hashes.txt` (18 monthly part files, both manifests). Original register file
+(`~/.drivepriority/phase5_test_replays_22110661c20a838c.json`) is also in OneDrive (run_info has
 `input_sha256: null` for a folder input).
 
 Checks: all_passed true; 0 engine rule violations; identical eligible event set in every cell (6,271 eligible,
