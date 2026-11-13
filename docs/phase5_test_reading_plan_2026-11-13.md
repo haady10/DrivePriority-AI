@@ -66,3 +66,25 @@ chosen from test numbers.
 SHA-256 of every `replay_test/part_*.parquet` and of the features and replay manifests, next to
 `run_info.json` and the lock register entry, because `run_info.json` leaves `input_sha256` empty for a
 folder input.
+
+## 8. Input completeness check (added 13 Nov about 16:25, still before any test number exists)
+
+A second AI review showed that `checks.json` does not validate the replay input: a synthetic input missing
+August to December still gave `all_passed: true`. The test results are accepted only if, in addition:
+- the features step reports 0 missing and 0 different rows against the Phase 3 test sample for every quarter
+  2025Q1..2026Q2;
+- the scoring step reports its sample reconciliation within 1e-6 for every month 2025-01..2026-06 and writes
+  18 monthly part files;
+- `daily_capacity.csv` has observed drives > 0 and K > 0 on every decision day from 2025-01-01 to 2026-06-29,
+  with no gap and no sudden drop that the fleet does not explain;
+- the SHA-256 of every part file and both manifests is committed with `run_info.json`.
+If any of these fails, the replay is not reported; a repeat is a logged deviation (protocol section 19).
+
+## 9. Corrections to how some columns are described (from the same review; no change to primary results)
+
+- `late_only` includes drives that were also inspected more than 30 days before failure; it is described as
+  "no timely inspection, at least one inspection in the last 7 days", or recomputed strictly from the logs.
+- The RQ3 "actionable" AP is affected by the label gap in the last 30 days of each split (failing rows kept,
+  healthy rows dropped); it is reported with that caveat for all scores alike.
+- RQ2 `confirm_c` rules rank by the minimum of the last c observed scores; they are not literal repeat alerts.
+- The no-future check can false-alarm when K = 0 (tiny fleets only; not the case for the full fleet).
