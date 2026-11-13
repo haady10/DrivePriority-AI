@@ -1,0 +1,12 @@
+[
+  {
+    "population": "full_fleet",
+    "started_utc": "2026-11-13T13:32:09+00:00",
+    "output": "C:\\DP-out\\phase5_test_full",
+    "authorization_sha256": "521ac2cd6be30d9beb6822c9b0654ffe557acfc450948a71ecf053588b8b8277",
+    "git_commit": "68a8e3e2526fbc681c54b1e62d05cda9ec53e749",
+    "authorized_by": "Haady Abdul Jabar (coordinator)",
+    "machine": "AACE-A-106-8",
+    "user": "1092467"
+  }
+]
