@@ -30,18 +30,36 @@ Since 2024-01-01 this is the only day whose total falls below 90 per cent of the
 (Limitation of that scan: a data center that is entirely absent produces no group row, so the per-data-center
 "under 20 per cent of usual" query cannot see it; the total-based query is what caught the day.)
 
-### 2. The raw Backblaze CSV for that day is itself short
-`Cleaned/source_manifest.json` of the 2025Q2 submission (`2025Q2_Zahid.zip`) records the members of the original
-`data_Q2_2025.zip`:
+### 2. The cleaning pipeline counted the same shortfall IN THE SOURCE FILE
+`Cleaned/quality_report.json` of the 2025Q2 submission records the rows counted while reading the original CSVs
+(`/calendar_coverage/daily_source_rows` and `/counts/daily_source_rows`):
 
-| Raw member | compressed | uncompressed | crc32 | rows in our data | bytes/row |
+| Date | rows in the source CSV | retained | quarantined |
+|---|---|---|---|
+| 2025-05-11 | 316,450 | 316,450 | 0 |
+| **2025-05-12** | **245,997** | **245,997** | **0** |
+| 2025-05-13 | 316,370 | 316,370 | 0 |
+
+`/failure_flags/source_to_output_reconciliation/by_date` for 2025-05-12 gives, for the healthy rows,
+`valid_source: 245995` and `retained_canonical: 245995` with `quarantine_evidence: 0` and `passed: true`, and
+2 / 2 / 0 / true for the failure rows. `Cleaned/validation_results.json` (`/checks[6]/readback/retained_daily_counts`)
+and `Revalidation/revalidation_report.json`
+(`/checks/failure_flag_reconciliation[6]/readback/retained_daily_counts`) independently report the same daily
+counts from a Parquet read-back. The source file held 245,997 rows and every one of them was kept.
+Recorded failure flags that day are 2, against 8 on each neighbouring day, consistent with a fifth of the fleet
+not reporting.
+
+### 2b. The raw archive member is short by the matching amount
+`Cleaned/source_manifest.json` records the members of the original `data_Q2_2025.zip`:
+
+| Raw member | compressed | uncompressed | crc32 | rows | bytes/row |
 |---|---|---|---|---|---|
 | `data_Q2_2025/2025-05-11.csv` | 11,733,238 | 124,329,571 | 951681f5 | 316,450 | 392.9 |
 | `data_Q2_2025/2025-05-12.csv` | 9,315,405 | **97,052,675** | 0509a721 | 245,997 | 394.5 |
 | `data_Q2_2025/2025-05-13.csv` | 11,727,009 | 124,302,283 | a61951a6 | 316,370 | 392.9 |
 
-The 12 May member is 27,276,896 bytes smaller than 11 May. At the bytes-per-row of the neighbouring days that
-size predicts about 247,016 rows, within 0.4 per cent of the 245,997 we hold. All three members share the same
+The 12 May member is 27,276,896 bytes smaller than 11 May; at the neighbouring days' bytes per row that size
+predicts about 247,016 rows, within 0.4 per cent of the counted 245,997. All three members share the same
 `header_signature` (8a517d6f...), so the schema is unchanged.
 
 ### 3. No row loss in our processing
@@ -76,15 +94,16 @@ Path A of the plan: a source observation gap. The replay is a faithful replay of
 the published data. The test results are accepted as computed and the day is disclosed in the report as a
 one-day source outage at one data center, with the bound above. No logged deviation and no corrective replay.
 
-## Still open (confirmation, not a condition)
-A direct line count of the three raw CSV members inside
-`C:\Users\1093813\Downloads\data_Q2_2025.zip` (Zahid's machine), with the count of lines containing `sac2`.
-Expected: about 245,997 rows and near zero sac2 rows on 12 May. This would replace the size-based inference with
-a direct count. The archive's publisher checksum was never independently established (noted at Level 2 approval
-for 2025Q2); the crc32 values above pin the members we actually read.
+## Confirmation status
+The cause is established from the cleaning pipeline's own source-side row counts (section 2), which are a direct
+count of the original CSV, not an inference. A line count of the raw members inside
+`C:\Users\1093813\Downloads\data_Q2_2025.zip` (Zahid's machine) would be a fourth, redundant confirmation and
+is not required. The archive's publisher checksum was never independently established (noted at Level 2 approval
+for 2025Q2); the crc32 values in section 2b pin the members that were actually read.
 
 ## Evidence files
-`C:\DP-out\check_gap.log`, `C:\DP-out\check_gap2.log`, `C:\DP-out\Cleaned_source_manifest.json` (extracted from
+`C:\DP-out\check_gap.log`, `C:\DP-out\check_gap2.log`, `C:\DP-out\Cleaned_source_manifest.json`,
+`Cleaned_quality_report.json`, `Cleaned_validation_results.json`, `Revalidation_revalidation_report.json` (all extracted from
 `2025Q2_Zahid.zip`, package sha256 C518132BB23774AB4434C8359EDB5E6EEE0883DBCC40CC797498AB9C208C6DCF);
 Zahid's preliminary investigation report of 14 Nov 2026. Copies in OneDrive
 `05_Phase5_RESULTS\04_provenance` and `03_reviews`.
