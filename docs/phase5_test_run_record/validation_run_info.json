@@ -1,0 +1,188 @@
+{
+  "created_utc": "2026-11-12T13:57:25+00:00",
+  "what_this_is": "Decision-support simulation of inspection slots. Simulated inspections only; no claim that failures are prevented.",
+  "split": "valid",
+  "population": "full_fleet",
+  "exploratory": false,
+  "quick_smoke_test_do_not_report": false,
+  "protocol_version": "phase5-v1",
+  "protocol_sha256": "22110661c20a838c709c9712249a36dfba6feef84291fd9316cbe66b8fa60af6",
+  "protocol_is_the_frozen_file": true,
+  "test_authorization": null,
+  "test_lock_register": null,
+  "protocol": {
+    "protocol_version": "phase5-v1",
+    "protocol_document": "docs/phase5_protocol.md",
+    "splits": {
+      "valid": {
+        "first_day": "2024-01-01",
+        "last_day": "2024-12-31"
+      },
+      "test": {
+        "first_day": "2025-01-01",
+        "last_day": "2026-06-30"
+      }
+    },
+    "budget_per_10000": {
+      "primary": 20,
+      "sensitivity": [
+        10,
+        50
+      ]
+    },
+    "scores": {
+      "smart": "smart_count",
+      "ml": "ml_h30",
+      "sensitivity": [
+        "smart_count_sum",
+        "smart_sum",
+        "gbm_h30",
+        "random"
+      ],
+      "rq3": [
+        "ml_h7",
+        "ml_h14",
+        "ml_h30"
+      ]
+    },
+    "tie": {
+      "mode": "drive",
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "sensitivity_mode": "day"
+    },
+    "cooldown_days": 7,
+    "queue": {
+      "primary": {
+        "admit_mult": 2,
+        "cap_mult": 3,
+        "expire_days": 3
+      },
+      "sensitivity": [
+        {
+          "admit_mult": 1,
+          "cap_mult": 2,
+          "expire_days": 2
+        },
+        {
+          "admit_mult": 2,
+          "cap_mult": 5,
+          "expire_days": 7
+        }
+      ]
+    },
+    "endpoint": {
+      "lead_min": 7,
+      "lead_max": 30,
+      "lead_max_sensitivity": 29,
+      "lead_long_min": 14,
+      "full_opportunity_days": 24
+    },
+    "rq2": {
+      "history_reset_gap_days": 7,
+      "watchlist_mult": [
+        1,
+        5
+      ],
+      "rules": [
+        {
+          "name": "daily",
+          "kind": "daily"
+        },
+        {
+          "name": "confirm_2",
+          "kind": "confirm",
+          "days": 2
+        },
+        {
+          "name": "confirm_3",
+          "kind": "confirm",
+          "days": 3
+        },
+        {
+          "name": "ewma_0.5",
+          "kind": "ewma",
+          "alpha": 0.5
+        },
+        {
+          "name": "ewma_0.2",
+          "kind": "ewma",
+          "alpha": 0.2
+        },
+        {
+          "name": "retain_2",
+          "kind": "retain",
+          "days": 2
+        },
+        {
+          "name": "retain_6",
+          "kind": "retain",
+          "days": 6
+        }
+      ]
+    },
+    "bootstrap": {
+      "reps": 2000,
+      "seed": 20261111,
+      "level": 0.95
+    },
+    "fleet_subsample": {
+      "fraction": 0.5,
+      "reps": 5
+    },
+    "min_events_for_subgroup_claim": 30
+  },
+  "tie_seeds_used": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "bootstrap_reps_used": 2000,
+  "input": "C:\\DP-out\\scores_valid\\replay_valid",
+  "input_sha256": null,
+  "prepare_manifest": null,
+  "rows": 104120817,
+  "drives": 327272,
+  "calendar_days": 366,
+  "first_day": "2024-01-01",
+  "last_day": "2024-12-31",
+  "code_sha256": {
+    "__init__.py": "c83b9055fa4bc8f8ec6d37e75e7fc87c8da2e6c80dc4edc80e0664591a34930f",
+    "checks.py": "fec957720e19482ec5bcbfa739342c6c2a63d550e9ea7efc29744590ebd26e1e",
+    "config.py": "6bae79a57bcefd3cb54baf9efb2918a21af84d1232331b1a8162671f07e33229",
+    "engine.py": "0b2799168437ce7a6fc646febebba9bb6c846f6669532738d438b43600bf2c7b",
+    "events.py": "29360f95aba457b5622a3fd2433855fcdf77d423fbf686fadf9e083a38086964",
+    "full_fleet.py": "b37ff6542d48ee828e6432ff383f5538c3361e2681d3fbfa4b7e3853681fb641",
+    "hashing.py": "47dc3d5f2cd39a7d08e9898826f69d09e6b1d4d8ac36942fa5f7617139e7c7dd",
+    "prediction.py": "1b157a8efa0492dc224f7a18235bbfdcf234952e3134919c38c40208f929fe17",
+    "ranking.py": "13f6e2aaeff27c040019235a619548b4d3097aa6102137bd70e995330f1db5a6",
+    "replay_input.py": "8a5cf7ee5f5bbb1ff5bc455295e00c65a41018446d93ed75bbfed1a49dd4e66d",
+    "run_phase5.py": "c66105a3120695530fb9af438c5afa52c9cb1d3bd63e81b501164df539531513",
+    "stability.py": "487d8123deb280ddd69528bfc4275dc8a53a51a4b125d1fe25b2b3a8487ade6d",
+    "stats.py": "efc69531ea5c03a440297b935922173b852fed020421d20882d1d4fb6749f0bb",
+    "transforms.py": "a93d50de04a95cf215f570cdb97ceb7629f67b59eb6e113dbe9c27f9dce38658"
+  },
+  "python": "3.11.9",
+  "numpy": "1.26.4",
+  "pandas": "3.0.6",
+  "machine": "AACE-A-106-8",
+  "os": "Windows-10-10.0.26100-SP0",
+  "total_seconds": 1369.9
+}

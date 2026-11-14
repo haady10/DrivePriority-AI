@@ -1,0 +1,46 @@
+{
+  "engine_rule_violations": {
+    "scheduled_above_capacity": 0,
+    "drive_scheduled_twice_same_day": 0,
+    "cooldown_violations": 0,
+    "queue_duplicate_entries": 0,
+    "queue_above_cap_after_admission": 0,
+    "queue_expired_entry_kept": 0,
+    "scheduled_drive_not_observed": 0,
+    "scheduled_not_equal_completed_plus_cancelled": 0,
+    "service_log_rows_not_equal_scheduled": 0
+  },
+  "engine_rule_violations_total": 0,
+  "eligible_event_set_identical_in_every_cell": true,
+  "eligible_event_set_sha256": {
+    "all": "f5934999233a0046d56084d7bbcc6e61e2966db1aa4eadf2578e9c217cd0b380",
+    "half0": "7b25d35ecd29f808394a00f055451b589dcf819d5ab2a8de9cf5cb4bbd7c2332",
+    "half1": "8575dddd27ebbf34a7981c2085fab6157a7098a6bfae2065d75fbf42cd2268cf",
+    "half2": "a9e2c35190baca41f02555a9b47e0816128d6d364918caf5e498cbd594d4abec",
+    "half3": "fbfba1928c1c0b3a394f276d723bff70bdb08d1267d36bc77af37f06f154dcb8",
+    "half4": "3f3a1ca4591f9201fee9b5ad471ce1213c58c3be397a482c0971232779330c51"
+  },
+  "eligible_events_do_not_depend_on_scores": true,
+  "coverage_between_0_and_1": true,
+  "no_future_information": {
+    "cut_day_index": 273,
+    "score_values_changed_after_cut": 326280894,
+    "families": 23,
+    "service_logs_compared": 86,
+    "service_log_rows_compared": 16122164,
+    "logs_that_changed": [],
+    "primary_logs_not_equal_to_full_replay_prefix": [],
+    "primary_logs_checked_against_full_replay": 8,
+    "passed": true
+  },
+  "input_no_rows_on_or_after_failure_day": true,
+  "input_no_duplicate_drive_days": true,
+  "events": {
+    "eligible": 6271,
+    "burn_in": 368,
+    "no_opportunity": 187,
+    "failures_in_window": 6826,
+    "eligible_with_full_opportunity": 4896
+  },
+  "all_passed": true
+}
