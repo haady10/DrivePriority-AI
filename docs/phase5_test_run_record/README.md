@@ -40,23 +40,18 @@ ML minus SMART (paired, points; reading rules in `docs/phase5_test_reading_plan_
   with intervals that exclude zero; budgets 10 and 50 favour ML (+9.8 / +4.1 and +3.3 / +4.4).
 - The schedule effect stays large: the cooldown adds +31.7 points for SMART and +17.6 for ML (fresh Top-K).
 
-## STATUS (14 Nov 2026): acceptance of the test results is PENDING
+## STATUS (14 Nov 2026): the test results are ACCEPTED as computed
 
 The reading plan (section 8) accepts the test results only if no sudden drop in observed drives is left
-unexplained. On 2025-05-12 the input has 243,354 observed drives against 312,952 the day before and 312,873 the day
-after: 69,565 drives are absent for that one day. An independent AI review (14 Nov) therefore does not accept the
-results as confirmatory until the cause is reconciled with the upstream records (snapshot, cleaned 2025Q2
-submission, raw Backblaze file of 2025-05-12). Not yet done.
-
-What is known: the numbers, logs and hashes all reproduce (two independent recomputations). Inspections due on
-2025-05-12 that were cancelled (seed 0): E1 94, E2 86, E3 154, E4 34, E5 211, E6 72, E7 169, E8 33; the decisions of
-that day had 139 fewer slots per cell. Leaving out all 281 eligible events whose 7..30-day window touches 12 or 13
-May gives ML minus SMART +14.66 [+13.74,+15.58], +11.32, +0.78 [-0.27,+1.81], -0.03 [-1.01,+0.94] (all events:
-+14.67, +11.23, +0.61, -0.26); leaving out all events failing 13 May to 12 Jul gives +14.77, +11.56, +1.07, +0.24.
-So the gap does not change any conclusion in these checks, but its cause is still unexplained. If the drives are
-missing in the raw Backblaze file, the replay is a faithful replay of the available observations and is reported
-with this disclosure. If rows were lost in our cleaning or integration, the input is incomplete and a corrected
-replay is a logged deviation (protocol section 19).
+unexplained. On 2025-05-12 the input has 243,354 observed drives against about 313,000 on the neighbouring days.
+That day is now explained: Backblaze's `sac2` data center has no rows at all on 2025-05-12 (every other site is
+normal), and the raw `data_Q2_2025/2025-05-12.csv` member is 97,052,675 bytes against 124,329,571 on 11 May, which
+at the neighbouring days' bytes per row predicts about 247,016 rows. The 2025Q2 cleaning read 28,808,042 rows and
+kept 28,808,042 with 0 quarantined. The rows were never in the published archive, so the replay is a faithful
+replay of the observations that exist. Full evidence and the effect bound:
+`docs/phase5_may12_gap_root_cause_2026-11-14.md`. Leaving out the 281 eligible events whose capture window
+touches 12 or 13 May changes the four ML-minus-SMART contrasts by at most 0.23 points (confirmatory +14.66
+against +14.67). The day is disclosed in the report; no deviation and no corrective replay.
 
 ## Timely capture by make, test (percent of eligible events; required beside every headline difference)
 | Make | Events | E1 | E2 | E3 | E4 | E5 | E6 | E7 | E8 |
