@@ -33,12 +33,41 @@ One-day dip in observed drives on 2025-05-12 (243,354 against about 313,000 the 
 
 ML minus SMART (paired, points; reading rules in `docs/phase5_test_reading_plan_2026-11-13.md`):
 - next day / fresh: +14.7 [+13.8,+15.6] (2024 +14.1). Confirmatory contrast: replicated.
-- next day / queue: +11.2 [+10.2,+12.3] (2024 +4.6). Same sign, larger, because SMART with the queue fell from 28.6 to 24.0.
+- next day / queue: +11.2 [+10.2,+12.3] (2024 +4.6). Same sign, larger: SMART with the queue is 4.6 points lower than in 2024 and ML 2.0 points higher (arithmetic only; no cause is established).
 - cooldown / fresh: +0.6 [-0.4,+1.7] (2024 +1.8). Not replicated.
 - cooldown / queue: -0.3 [-1.2,+0.7] (2024 -0.6). No difference.
 - Under the cooldown, day-level ties (-6.3 / -5.2), `smart_count_sum` (-3.1 / -2.3) and GBM (-3.4 / -9.1) all put SMART ahead
   with intervals that exclude zero; budgets 10 and 50 favour ML (+9.8 / +4.1 and +3.3 / +4.4).
 - The schedule effect stays large: the cooldown adds +31.7 points for SMART and +17.6 for ML (fresh Top-K).
+
+## STATUS (14 Nov 2026): acceptance of the test results is PENDING
+
+The reading plan (section 8) accepts the test results only if no sudden drop in observed drives is left
+unexplained. On 2025-05-12 the input has 243,354 observed drives against 312,952 the day before and 312,873 the day
+after: 69,565 drives are absent for that one day. An independent AI review (14 Nov) therefore does not accept the
+results as confirmatory until the cause is reconciled with the upstream records (snapshot, cleaned 2025Q2
+submission, raw Backblaze file of 2025-05-12). Not yet done.
+
+What is known: the numbers, logs and hashes all reproduce (two independent recomputations). Inspections due on
+2025-05-12 that were cancelled (seed 0): E1 94, E2 86, E3 154, E4 34, E5 211, E6 72, E7 169, E8 33; the decisions of
+that day had 139 fewer slots per cell. Leaving out all 281 eligible events whose 7..30-day window touches 12 or 13
+May gives ML minus SMART +14.66 [+13.74,+15.58], +11.32, +0.78 [-0.27,+1.81], -0.03 [-1.01,+0.94] (all events:
++14.67, +11.23, +0.61, -0.26); leaving out all events failing 13 May to 12 Jul gives +14.77, +11.56, +1.07, +0.24.
+So the gap does not change any conclusion in these checks, but its cause is still unexplained. If the drives are
+missing in the raw Backblaze file, the replay is a faithful replay of the available observations and is reported
+with this disclosure. If rows were lost in our cleaning or integration, the input is incomplete and a corrected
+replay is a logged deviation (protocol section 19).
+
+## Timely capture by make, test (percent of eligible events; required beside every headline difference)
+| Make | Events | E1 | E2 | E3 | E4 | E5 | E6 | E7 | E8 |
+|---|---|---|---|---|---|---|---|---|---|
+| Seagate | 2,488 | 29.8 | 53.1 | 56.5 | 66.2 | 41.3 | 58.8 | 58.7 | 65.6 |
+| HGST | 1,163 | 0.0 | 11.6 | 70.5 | 48.8 | 31.6 | 32.9 | 72.8 | 55.2 |
+| Toshiba | 1,865 | 0.0 | 7.1 | 20.8 | 18.6 | 4.8 | 12.9 | 27.4 | 23.8 |
+| WDC | 755 | 0.0 | 9.3 | 15.2 | 27.3 | 2.4 | 16.3 | 24.1 | 35.4 |
+
+(E1 SMART next-day fresh, E2 ML next-day fresh, E3 SMART cooldown fresh, E4 ML cooldown fresh, E5 SMART next-day
+queue, E6 ML next-day queue, E7 SMART cooldown queue, E8 ML cooldown queue. Make from the model name.)
 
 ## Corrected reading (review of 14 Nov 2026, `docs/phase5_review_test_results_2026-11-14.md`)
 
@@ -47,7 +76,11 @@ the sensitivity runs show. Corrected conclusions:
 
 1. Confirmed (pre-declared): next-day re-inspection, fresh Top-K: ML +14.7 points over SMART count (+11.8 with
    day-rotating ties). This setting re-inspects the same drives every day and is not a realistic practice.
-2. With the 7-day cooldown the ML model does not beat simple SMART rules. Timely capture on test (fresh / queue):
+2. At the primary budget (20 per 10,000) no robust ML advantage was established under the 7-day cooldown: the primary
+   intervals include zero, and the tie, stronger-baseline and GBM sensitivity runs favour SMART on test. This is not
+   "no difference" and it does not hold across budgets: at budgets 10 and 50 the cooldown contrasts (frozen ties)
+   favour ML in both years (B10: +4.0/+2.9 in 2024, +9.8/+4.1 on test; B50: +4.0/+6.1 and +3.3/+4.4; no
+   rotating-tie runs exist for these budgets). Timely capture on test at budget 20 (fresh / queue):
    SMART count with rotating ties 50.4 / 52.8; SMART count+sum 47.3 / 49.9; ML 30-day 44.1 / 47.6; SMART count with
    frozen ties (primary) 43.5 / 47.9. SMART count with rotating ties was ahead of ML in both years (fresh Top-K:
    2024 -3.7 [-4.9,-2.4], test -6.3 [-7.4,-5.2]). These are pre-specified sensitivity runs, not the primary analysis.

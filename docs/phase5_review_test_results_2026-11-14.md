@@ -8,6 +8,21 @@ recomputed from the raw result files with new code. Weak part: the code review a
 The study is a decision-support simulation on old data. It does not show that any failure was prevented.
 The original test results are unchanged; this review changes only how they are read.
 
+## Addendum after the independent AI review of 14 Nov (the reviewer here was too lenient on two points)
+
+1. The one-day drop of 2025-05-12 (69,565 drives absent for one day) was called "negligible" below. The reading
+   plan, written before the test, says the results are accepted only if no sudden drop is left unexplained. The
+   independent review is right: acceptance is PENDING until the cause is reconciled with the upstream records.
+   Bound computed since: leaving out the 281 eligible events whose window touches 12 or 13 May changes the four
+   ML-minus-SMART contrasts by at most 0.23 points (confirmatory: +14.66 against +14.67).
+2. Finding 1 below must be read for the primary budget only. At budgets 10 and 50 the cooldown contrasts with frozen
+   ties favour ML in both years and pass the strict replication rule; no rotating-tie runs exist for those budgets.
+   Correct wording: "At the primary budget of 20 per 10,000 no robust ML advantage was established under the 7-day
+   cooldown; the tie, stronger-baseline and GBM sensitivity runs favour SMART on test." Not "no difference", not
+   "SMART is better" without the budget.
+3. "Because SMART fell" was a causal phrase for arithmetic: SMART with the queue is 4.6 points lower than in 2024
+   and ML 2.0 points higher.
+
 ## Verdict: accept with changes
 
 The official numbers are correct and the one-time test run followed the rules. No bug and no use of future
@@ -106,9 +121,10 @@ seed 0 logs are saved); RQ2 and RQ3 beyond the tables.
 1. Confirmed (pre-declared): with next-day re-inspection and fresh Top-K the ML score captures 14.7 points more
    failures than SMART count (11.8 with rotating ties). This setting re-inspects the same drives daily and is not
    a realistic practice.
-2. With a 7-day cooldown the ML model does not beat simple SMART rules. SMART count with rotating ties was ahead
-   in both years (by 3.7 and 6.3 points with fresh Top-K); SMART count+sum was ahead on test.
-3. The best policy on the test period is a SMART rule: SMART count, rotating ties, 7-day cooldown, queue (52.8%).
+2. At the primary budget (20 per 10,000) no robust ML advantage was established under the 7-day cooldown. SMART count
+   with rotating ties was ahead in both years (by 3.7 and 6.3 points with fresh Top-K); SMART count+sum was ahead on
+   test. At budgets 10 and 50 the frozen-tie contrasts favour ML in both years.
+3. At budget 20 the best policy on the test period is a SMART rule: SMART count, rotating ties, 7-day cooldown, queue (52.8%).
 4. Spacing re-inspections (a larger watch-list at the same daily effort) raises capture far more than the choice
    of score; this follows partly from how the simulation counts a capture.
 5. The ML-versus-SMART difference depends on the drive make (ML ahead on Seagate and WDC, SMART far ahead on HGST).
