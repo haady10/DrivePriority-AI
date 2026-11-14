@@ -37,8 +37,31 @@ ML minus SMART (paired, points; reading rules in `docs/phase5_test_reading_plan_
 - cooldown / fresh: +0.6 [-0.4,+1.7] (2024 +1.8). Not replicated.
 - cooldown / queue: -0.3 [-1.2,+0.7] (2024 -0.6). No difference.
 - Under the cooldown, day-level ties (-6.3 / -5.2), `smart_count_sum` (-3.1 / -2.3) and GBM (-3.4 / -9.1) all put SMART ahead
-  with intervals that exclude zero; budgets 10 and 50 favour ML (+9.8 / +4.1 and +3.3 / +4.4). No ML-versus-SMART claim under the cooldown.
+  with intervals that exclude zero; budgets 10 and 50 favour ML (+9.8 / +4.1 and +3.3 / +4.4).
 - The schedule effect stays large: the cooldown adds +31.7 points for SMART and +17.6 for ML (fresh Top-K).
+
+## Corrected reading (review of 14 Nov 2026, `docs/phase5_review_test_results_2026-11-14.md`)
+
+The numbers above are unchanged. The first reading ("no reliable difference under the cooldown") understated what
+the sensitivity runs show. Corrected conclusions:
+
+1. Confirmed (pre-declared): next-day re-inspection, fresh Top-K: ML +14.7 points over SMART count (+11.8 with
+   day-rotating ties). This setting re-inspects the same drives every day and is not a realistic practice.
+2. With the 7-day cooldown the ML model does not beat simple SMART rules. Timely capture on test (fresh / queue):
+   SMART count with rotating ties 50.4 / 52.8; SMART count+sum 47.3 / 49.9; ML 30-day 44.1 / 47.6; SMART count with
+   frozen ties (primary) 43.5 / 47.9. SMART count with rotating ties was ahead of ML in both years (fresh Top-K:
+   2024 -3.7 [-4.9,-2.4], test -6.3 [-7.4,-5.2]). These are pre-specified sensitivity runs, not the primary analysis.
+3. The primary tie rule (ties frozen per drive) works against SMART count, which has few distinct values: the same
+   tied drives win every day (10,446 distinct drives inspected under the cooldown against 14,552 with rotating
+   ties). Both tie modes are reported side by side.
+4. The best policy on the test period is a SMART rule: SMART count, rotating ties, cooldown, queue (52.8%).
+5. In every policy 95.5 to 99.3% of inspections are repeats and an inspection has no consequence in the simulation.
+   "Timely capture" means "on the watch-list 7 to 30 days before failure", so the cooldown gain is mainly a larger
+   watch-list at the same daily effort.
+6. The cooldown average hides opposite effects by make (ML minus SMART, fresh: HGST -21.7, Toshiba -2.2,
+   Seagate +9.7, WDC +12.1).
+7. The Phase 4 models were scored on the 10% test sample on 11 Nov 2026; only the Phase 5 policy results on the
+   test period were computed once. Recorded UTC times of the run are 4 hours early (lab PC clock).
 
 RQ2 (top-1K list overlap, ML): daily 0.907; confirm_2 0.920, confirm_3 0.928, ewma_0.5 0.927, ewma_0.2 0.944,
 retain_2 0.924, retain_6 0.933. Coverage change under the cooldown (daily 44.1): retain_2 +0.1, retain_6 +0.1,
