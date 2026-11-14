@@ -349,3 +349,24 @@ occur; the report must then say how many entries were removed (`queue_removed_ca
 
 Wording, not a rule change: in section 13 "c days in a row" means c consecutive **observed** records of the
 drive; the history starts again after a gap of more than 7 calendar days.
+
+### C-9 to C-11 (post-test, reporting only, 14 Nov 2026)
+
+Made after the one-time test replay, in answer to the reviews of 13 and 14 November. None of them touches a
+decision, the engine, the events or any reported number; the saved test and validation results are unchanged
+and nothing was rerun. Tests: 51 pass, 1 skipped.
+
+- **C-9 `late_only_strict`.** `late_only` means "a late inspection (1 to lead_min-1 days before failure) and no
+  timely one"; such a drive may also have been inspected earlier than lead_max, so the name overstated what the
+  column measures. The column keeps its name and meaning, and a new column `late_only_strict` gives the share
+  with a late inspection and nothing else. Test:
+  `test_late_only_strict_excludes_drives_also_inspected_too_early`.
+- **C-10 input provenance for a folder input.** `run_info.json` left `input_sha256` empty when the replay input
+  was a folder of monthly parquet files, which is the full-fleet case. It now records a SHA-256 per file. For
+  the test replay of 13 November the hashes were computed separately on the lab PC and committed as
+  `docs/phase5_test_run_record/input_hashes.txt`.
+- **C-11 input completeness.** `checks.json` did not verify that the replay input covers the whole split: a
+  missing month would have passed unnoticed (the features and scoring steps do check their own input). It now
+  lists `input_calendar_days_with_no_rows`. The list is reported, not gated, because a day can legitimately have
+  no rows (the terminal service-only day of a split, or a source outage such as 2025-05-12). The reading plan of
+  13 November requires any such day to be explained before the results are accepted.

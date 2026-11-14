@@ -425,6 +425,23 @@ def test_lead_boundaries_7_and_30_count_and_6_and_31_do_not(tmp_path):
     assert by("timely_long") == {"L6": False, "L7": False, "L30": True, "L31": False, "LC": False}
 
 
+def test_late_only_strict_excludes_drives_also_inspected_too_early(tmp_path):
+    """`late_only` means "late and never timely"; such a drive may also have been inspected before lead_max.
+    `late_only_strict` is the share with a late inspection and nothing else."""
+    recs = [{"drive_id": d, "day": t, "score": 0.0, "fail": 60} for d in ("late_only", "early_and_late")
+            for t in range(60)]
+    data = make_data(tmp_path, recs, D0 + timedelta(days=99))
+    ev = build_events(data, 7, 30)
+    res = manual_result(data, [("late_only", 55, True),                       # lead 5: late
+                               ("early_and_late", 55, True),                  # lead 5: late
+                               ("early_and_late", 10, True)])                 # lead 50: earlier than lead_max
+    out = event_outcomes(ev, res, data.n_drives, 29, 14)
+    by = lambda k: {str(data.drive_ids[d]): v for d, v in zip(ev.drive, out[k].tolist())}
+    assert by("timely") == {"late_only": False, "early_and_late": False}
+    assert by("late_only") == {"late_only": True, "early_and_late": True}
+    assert by("late_only_strict") == {"late_only": True, "early_and_late": False}
+
+
 # ------------------------------------------------------------------ RQ2: persistence rules and turnover
 
 def test_persistence_rules_on_a_hand_worked_sequence(tmp_path):
@@ -630,6 +647,15 @@ def test_command_line_end_to_end_and_test_split_lock(tmp_path):
     assert nf["families"] >= 20 and nf["primary_logs_checked_against_full_replay"] == 8
     assert checks["eligible_event_set_identical_in_every_cell"] and checks["eligible_events_do_not_depend_on_scores"]
     assert len(checks["eligible_event_set_sha256"]["all"]) == 64
+    # input completeness and provenance: every calendar day of the split has rows, and a folder input is
+    # hashed file by file (run_info used to leave input_sha256 empty for a folder).
+    # the fixture covers only the first 150 days of the 366-day validation window, so the check lists the rest;
+    # on a real run this list is what the reading plan requires to be empty or explained
+    empty = checks["input_calendar_days_with_no_rows"]
+    assert len(empty) == 216 and empty[0] == "2024-05-30" and empty[-1] == "2024-12-31" and empty == sorted(empty)
+    info = json.loads((out / "run_info.json").read_text())
+    h = info["input_sha256"]
+    assert (isinstance(h, str) and len(h) == 64) or (isinstance(h, dict) and h and all(len(v) == 64 for v in h.values()))
     res = pd.read_csv(out / "cell_results.csv")
     prim = res[res["group"] == "rq1_primary"]
     assert sorted(prim["e_cell"]) == [f"E{i}" for i in range(1, 9)]

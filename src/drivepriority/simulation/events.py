@@ -95,12 +95,16 @@ def event_outcomes(events: EventTable, res: PolicyResult, n_drives: int, lead_ma
     timely = any_in(timely_mask)
     any_prior = any_in(lead >= 1)
     late = any_in((lead >= 1) & (lead < lo))
+    too_early = any_in(lead > hi)
     return {
         "timely": timely,
         "timely_alt_window": any_in((lead >= lo) & (lead <= lead_max_alt)),
         "timely_long": any_in((lead >= lead_long) & (lead <= hi)),
         "any_prior": any_prior,
+        # "late_only": a late inspection (1..lead_min-1 days before failure) and no timely one. The drive may
+        # also have been inspected earlier than lead_max; "late_only_strict" excludes those drives.
         "late_only": late & ~timely,
+        "late_only_strict": late & ~timely & ~too_early,
         "never_before_failure": ~any_prior,
         "earliest_timely_lead": earliest[events.drive],
     }

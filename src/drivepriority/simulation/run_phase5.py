@@ -99,6 +99,7 @@ def seed_summary(events: EventTable, out: dict, wl: dict) -> dict:
         "coverage_lead_long": share(out["timely_long"]),
         "any_prior_capture": share(out["any_prior"]),
         "late_only": share(out["late_only"]),
+        "late_only_strict": share(out["late_only_strict"]),
         "never_inspected_before_failure": share(out["never_before_failure"]),
         "coverage_full_opportunity_events": float(out["timely"][full].mean()) if full.any() else float("nan"),
         "full_opportunity_events": int(full.sum()),
@@ -391,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         base = {"score": c.source, "rule": c.rule, "reinspection": r["reinspection"], "coverage": r["coverage"],
                 "coverage_ci_low": ci_map[c.key][0], "coverage_ci_high": ci_map[c.key][1],
                 "any_prior_capture": r["any_prior_capture"], "late_only": r["late_only"],
+                "late_only_strict": r["late_only_strict"],
                 "earliest_lead_median": r["earliest_lead_median"], "repeat_share": r["repeat_share"],
                 "distinct_drives_inspected": r["distinct_drives_inspected"]}
         for m in rq2["watchlist_mult"]:
@@ -416,7 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     rq2_df.to_csv(out / "rq2_stability.csv", index=False)
 
     rq3_rows = [{"table": "budgeted_coverage", **{k: v for k, v in cell_row(c).items() if k in (
-        "score", "reinspection", "coverage", "any_prior_capture", "late_only", "earliest_lead_median",
+        "score", "reinspection", "coverage", "any_prior_capture", "late_only", "late_only_strict",
+        "earliest_lead_median",
         "repeat_share", "distinct_drives_inspected", "inspection_precision_30d")},
         "coverage_ci_low": ci_map[c.key][0], "coverage_ci_high": ci_map[c.key][1]} for c in rq3_cells]
     rq3_rows += [{"table": "prediction_quality", **r} for r in pred_rows]
@@ -487,6 +490,10 @@ def main(argv: list[str] | None = None) -> int:
                    and len({r["eligible_events"] for r in rows if r["fleet"] == "all"}) == 1)
     events_clean = events_do_not_depend_on_scores(data, events, e["lead_min"], e["lead_max"], e["full_opportunity_days"])
     cov_ok = bool(((res["coverage"] >= 0) & (res["coverage"] <= 1)).all())
+    # Completeness of the replay input: a calendar day between first and last with no row at all. checks.json
+    # does not otherwise verify that the input covers the whole split (a missing month would pass unnoticed).
+    empty = np.flatnonzero(np.diff(data.day_start) == 0)
+    days_with_no_rows = [str(date(1970, 1, 1) + timedelta(days=data.first_day + int(i))) for i in empty]
     all_ok = bool(sum(problems.values()) == 0 and same_events and events_clean and cov_ok and nofut["passed"])
     checks = {
         "engine_rule_violations": problems,
@@ -498,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
         "no_future_information": nofut,
         "input_no_rows_on_or_after_failure_day": True,     # load_replay_input stops otherwise
         "input_no_duplicate_drive_days": True,             # load_replay_input stops otherwise
+        "input_calendar_days_with_no_rows": days_with_no_rows,
         "events": events.counts(),
         "all_passed": all_ok,
     }
@@ -515,7 +523,9 @@ def main(argv: list[str] | None = None) -> int:
         "protocol_is_the_frozen_file": proto.is_frozen,
         "test_authorization": auth, "test_lock_register": str(register) if register else None,
         "protocol": proto.raw, "tie_seeds_used": seeds, "bootstrap_reps_used": boot["reps"],
-        "input": str(in_path), "input_sha256": sha256_file(in_path) if in_path.is_file() else None,
+        "input": str(in_path),
+        "input_sha256": (sha256_file(in_path) if in_path.is_file()
+                         else {p.name: sha256_file(p) for p in sorted(in_path.glob("*.parquet"))}),
         "prepare_manifest": prep,
         "rows": int(len(data.day)), "drives": int(data.n_drives), "calendar_days": int(data.n_days),
         "first_day": str(first_day), "last_day": str(last_day),
