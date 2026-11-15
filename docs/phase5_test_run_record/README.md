@@ -101,7 +101,10 @@ SMART count 0.018. The primary score stays `ml_h30`.
 
 Missed failures: 36.2% of eligible events are never timely-captured in any of the 8 cells (2024: 38.1%). SMART
 next day (E1) captures no non-Seagate failure. Under the cooldown HGST favours SMART (E3 .705 vs E4 .488), Seagate
-and WDC favour ML. Cause for Toshiba and WDC not verified.
+and WDC favour ML. Explained since (post-test, read-only): the SMART count cannot rank non-Seagate drives
+at the top (`docs/phase5_finding_smart_attribute_availability_2026-11-14.md`), and 88.2% of never-captured
+events were never inspected in any policy, led by two models with almost no SMART warning before failure
+(`docs/phase5_never_caught_breakdown_2026-11-15.md`).
 
 Limits: intervals cover resampling of events only; only tie-seed-0 service logs saved; 2024 was used for early
 stopping in Phase 4 (test is the clean period); the fleet mix differs between years; the human independent

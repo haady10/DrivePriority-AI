@@ -41,6 +41,8 @@ claim anywhere.
 | A29 | Pre-failure indicator availability: HGST 0.906, Seagate 0.830, WDC 0.765, Toshiba 0.642 | `smart_by_make2.log` | 30 days before failure, test period |
 | A30 | 2025-05-12 is a one-day source gap at Backblaze's sac2 site, not a loss in our processing | `check_gap.log`, `check_gap2.log`, `Cleaned_quality_report.json` | `daily_source_rows` 316,450 / 245,997 / 316,370; write-up `docs/phase5_may12_gap_root_cause_2026-11-14.md` |
 | A31 | Excluding the 281 events whose window touches the gap changes the contrasts by at most 0.23 points | recomputation from `event_coverage.parquet` | recorded in the gap note, section "Effect on the results" |
+| A32 | Of the 2,270 never-captured events, 2,003 (88.2 per cent) were never inspected in any primary policy, 186 only 1-6 days before failure, 64 only more than 30 days before, 17 both | `event_coverage.parquet`, `service_log_E1..E8.parquet` (seed 0) | `tools/phase5_post_test/never_caught_logs.py`; write-up `docs/phase5_never_caught_breakdown_2026-11-15.md` |
+| A33 | The two models with the highest never-captured share (TOSHIBA MG08ACA16TEY 85.2, ST24000NM002H 80.5 per cent) are the two with the lowest pre-failure indicator availability (0.254, 0.131) | `event_coverage.parquet`, `smart_by_make2.log` | `tools/phase5_post_test/never_caught_test.py`; finding note section 5 |
 
 ## B. Limitations
 
@@ -64,3 +66,4 @@ claim anywhere.
 | B16 | The 7-day ML model was not promoted to primary and has no paired comparison | Its apparent advantage (A18) is exploratory | reading plan section 6 |
 | B17 | All reviews so far are by AI; no human independent review | Stated as open in every results note | run record and review notes |
 | B18 | The archive's publisher checksum was never independently established (2025Q2 Level 2 approval) | Source authenticity rests on the recorded crc32 of the members actually read | gap note, confirmation status |
+| B19 | Some drive models fail with little or no SMART warning (A33); most never-captured drives were never inspected at all (A32) | No ranking built on these SMART inputs can reach them in advance; the 36.2 per cent miss rate is partly a property of the data, not only of the policies | never-caught breakdown note of 15 Nov |
