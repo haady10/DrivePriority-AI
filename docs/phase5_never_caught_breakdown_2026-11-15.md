@@ -1,5 +1,7 @@
 # Why 36.2 per cent of test failures are never captured (15 Nov 2026)
 
+> Wording corrected 15 Nov 2026 after the independent final review (`docs/phase5_final_review_response_2026-11-15.md`). No number from the test run was changed.
+
 Post-test, read-only, descriptive. Inputs: the saved test results `event_coverage.parquet` and
 `service_log_E1.parquet`..`service_log_E8.parquet` (tie seed 0; OneDrive `05_Phase5_RESULTS/02_test_2025_2026_fullfleet`).
 Scripts: `tools/phase5_post_test/never_caught_logs.py`, `tools/phase5_post_test/never_caught_test.py`.
@@ -31,14 +33,18 @@ the lowest share of failed drives showing any SMART indicator above zero before 
 `docs/phase5_finding_smart_attribute_availability_2026-11-14.md` section 5). Together they are 549 of the 2,270.
 
 The median number of observed days in the capture window is 24 for both captured and never-captured events, so
-missing observations do not explain the misses (48 never-captured events have fewer than 10).
+missing observations are unlikely to be the main explanation (48 never-captured events have fewer than 10).
 
 ## Reading
 
-The misses are mainly a ranking effect, not a timing effect: about nine in ten never-captured drives never ranked
-high enough under either the ML score or the SMART count to receive a single inspection at about 626 inspections
-per day. About one in eleven was reached only in its last week. The worst models are the ones that show little or
-no SMART warning before failure; no ranking built on these SMART inputs can be expected to reach them in advance.
+Descriptively, in the seed-0 logs about nine in ten never-captured drives received no inspection at all under any
+of the eight policies at about 626 inspections per day, and about one in eleven was reached only in its last week.
+The two worst models are those whose failed drives most rarely show a SMART warning before failure; this is an
+association for their failed-drive populations, not a cause shown for each missed failure. The data does not
+separate the possible explanations: low signal availability, the ranking, the budget, tie handling and timing.
+It does not show that these failures could not have been reached by some other SMART-based rule. Equal median
+observed days (24) makes missing observation days an unlikely main explanation, but does not rule them out for
+individual drives.
 
 ## Limits and open part
 

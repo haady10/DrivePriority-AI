@@ -1,5 +1,7 @@
 # Root cause of the 2025-05-12 observation gap (14 Nov 2026)
 
+> Wording corrected 15 Nov 2026 after the independent final review (`docs/phase5_final_review_response_2026-11-15.md`). No number from the test run was changed.
+
 Conclusion: the missing observations are absent from the ORIGINAL Backblaze archive. They were not lost in our
 cleaning, integration or Phase 5 input preparation. The acceptance condition of
 `docs/phase5_test_reading_plan_2026-11-13.md` section 8 ("no sudden drop in observed drives left unexplained")
@@ -74,7 +76,7 @@ all six quarters.
 No cleaning, integration or Phase 5 step partitions work by data center, vault or cluster. A loss in our
 processing would follow file or row boundaries, not Backblaze's physical site layout.
 
-## Effect on the results (bound, computed 14 Nov)
+## Effect on the results (exclusion sensitivity, computed 14 Nov)
 Inspections due on 2025-05-12 that were cancelled (tie seed 0): E1 94, E2 86, E3 154, E4 34, E5 211, E6 72,
 E7 169, E8 33. The decisions of that day had 139 fewer slots per cell. Leaving out all 281 eligible events whose
 7..30-day capture window touches 12 or 13 May:
@@ -92,7 +94,10 @@ changes.
 ## Decision
 Path A of the plan: a source observation gap. The replay is a faithful replay of the observations that exist in
 the published data. The test results are accepted as computed and the day is disclosed in the report as a
-one-day source outage at one data center, with the bound above. No logged deviation and no corrective replay.
+one-day gap in the archive analysed, in which one data center (sac2) has no rows, with the exclusion
+sensitivity above. A site outage at Backblaze and the publisher's own checksum are not independently confirmed; the
+0.23-point figure is the largest shift after excluding the 281 exposed events, not a bound on what the missing rows,
+features or queue states would have changed. No logged deviation and no corrective replay.
 
 ## Confirmation status
 The cause is established from the cleaning pipeline's own source-side row counts (section 2), which are a direct

@@ -1,5 +1,7 @@
 # Why the SMART baseline inspects almost only Seagate drives (14 Nov 2026)
 
+> Wording corrected 15 Nov 2026 after the independent final review (`docs/phase5_final_review_response_2026-11-15.md`). No number from the test run was changed.
+
 Read-only checks on the integrated snapshot (`C:\DP-out\smart_by_make.log`, `smart_by_make2.log`,
 `smart_count_dist.log`, copies in OneDrive `05_Phase5_RESULTS\04_provenance`). Nothing was changed or rerun.
 Decision-support simulation on old data; no prevention claim.
@@ -13,7 +15,7 @@ do not report the SMART attributes the baseline uses.
 
 ## What the data shows
 
-### 1. Two of the five indicators are reported only by Seagate
+### 1. Two of the five indicators are almost never reported outside Seagate
 Share of rows where the attribute is NULL, fleet of 2025-06-02 (319,304 drives):
 
 | Make | drives | smart_5 | smart_187 | smart_188 | smart_197 | smart_198 |
@@ -23,11 +25,13 @@ Share of rows where the attribute is NULL, fleet of 2025-06-02 (319,304 drives):
 | WDC | 75,080 | 0.000 | **0.996** | **0.994** | 0.004 | 0.004 |
 | HGST | 27,302 | 0.000 | **1.000** | **1.000** | 0.000 | 0.000 |
 
-`smart_187` (reported uncorrectable errors) and `smart_188` (command timeout) are Seagate-only in this fleet.
+`smart_187` (reported uncorrectable errors) and `smart_188` (command timeout) are NULL in all Toshiba and HGST rows
+and in 99.6 / 99.4 per cent of WDC rows on this day (about 0.4 / 0.6 per cent of WDC rows report them); Seagate reports
+them in 99.9 per cent of rows.
 The Phase 4 baseline counts how many of the five indicators are above zero and reads a missing value as zero
 (rule R21 with the NULL-as-0 convention recorded in the Phase 4 review fixes).
 
-### 2. The baseline therefore has a different ceiling per make
+### 2. The observed maximum of the count differs by make (one day)
 Distribution of the indicator count on 2025-06-02:
 
 | Count | Seagate | Toshiba | WDC | HGST |
@@ -40,16 +44,23 @@ Distribution of the indicator count on 2025-06-02:
 | 5 | **106** | 0 | 0 | 0 |
 | max reached | **5** | 3 | 3 | 3 |
 
-### 3. The budget is smaller than the Seagate-only top band
+This is the distribution on one day, not a proven ceiling for every day.
+
+### 3. The budget is smaller than the Seagate high-count band
 The daily capacity is `floor(20 x N/10,000)`, about 626 drives for a fleet of about 313,000 HDDs. On 2025-06-02
 there were 855 Seagate drives at count 4 or 5 — more than the entire daily budget. A fleet-wide Top-K on this
-score therefore fills every slot from the Seagate-only band and never reaches a non-Seagate drive, whatever its
-condition. With ties frozen per drive the same drives win every day, which is also why E1's repeat share is
+score therefore fills its slots from the Seagate high-count band on that day. The saved E1 service log (tie seed 0)
+confirms this for the whole period: all 355,069 scheduled and 352,686 completed E1 inspections on all 545 decision
+days are Seagate drives (2,339 distinct); no other make is inspected on any day
+(`tools/phase5_post_test/e1_make_by_day.py`). The ML cells also concentrate on Seagate (78.9 to 85.8 per cent of
+completed inspections in E2, E4, E6, E8, against about 34 per cent of the fleet). With ties frozen per drive the same drives win every day, which is also why E1's repeat share is
 99.3 per cent and it reaches only 2,345 distinct drives in 18 months.
 
 ### 4. The other makes are not short of warning signs
 Share of failed drives with at least one indicator above zero in the 30 days before failure (6,834 failed drives,
-test period):
+test period; denominator from the raw snapshot: earliest failure flag per serial number inside 2025-01-01..2026-06-30,
+make from the model name. The replay has 6,826 first-failure events; the 8 are not reconciled one by one, and the
+make-level differences go both ways, see claims file B20):
 
 | Make | failed drives | any indicator nonzero | smart_5 | smart_197 | smart_198 |
 |---|---|---|---|---|---|

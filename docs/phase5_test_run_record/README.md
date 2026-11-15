@@ -1,5 +1,7 @@
 # Phase 5 – record of the one-time full-fleet TEST run (13 Nov 2026)
 
+> Wording corrected 15 Nov 2026 after the independent final review (`docs/phase5_final_review_response_2026-11-15.md`). No number from the test run was changed.
+
 Decision-support simulation on old data. It does NOT show that any failure was prevented.
 
 Run: lab PC AACE-A-106-8, clean clone of branch `phase5/simulation` at commit `68a8e3e` (contains
@@ -48,7 +50,8 @@ That day is now explained: Backblaze's `sac2` data center has no rows at all on 
 normal), and the raw `data_Q2_2025/2025-05-12.csv` member is 97,052,675 bytes against 124,329,571 on 11 May, which
 at the neighbouring days' bytes per row predicts about 247,016 rows. The 2025Q2 cleaning read 28,808,042 rows and
 kept 28,808,042 with 0 quarantined. The rows were never in the published archive, so the replay is a faithful
-replay of the observations that exist. Full evidence and the effect bound:
+replay of the observations that exist in the archive analysed (a gap in that archive; a site outage at the
+publisher is not independently confirmed). Full evidence and the exclusion sensitivity:
 `docs/phase5_may12_gap_root_cause_2026-11-14.md`. Leaving out the 281 eligible events whose capture window
 touches 12 or 13 May changes the four ML-minus-SMART contrasts by at most 0.23 points (confirmatory +14.66
 against +14.67). The day is disclosed in the report; no deviation and no corrective replay.
@@ -82,7 +85,8 @@ the sensitivity runs show. Corrected conclusions:
 3. The primary tie rule (ties frozen per drive) works against SMART count, which has few distinct values: the same
    tied drives win every day (10,446 distinct drives inspected under the cooldown against 14,552 with rotating
    ties). Both tie modes are reported side by side.
-4. The best policy on the test period is a SMART rule: SMART count, rotating ties, cooldown, queue (52.8%).
+4. The highest observed test coverage among the evaluated budget-20 policies and sensitivity runs is a SMART rule:
+   SMART count, rotating ties, cooldown, queue (52.8%). It was not chosen in advance.
 5. In every policy 95.5 to 99.3% of inspections are repeats and an inspection has no consequence in the simulation.
    "Timely capture" means "on the watch-list 7 to 30 days before failure", so the cooldown gain is mainly a larger
    watch-list at the same daily effort.
@@ -101,10 +105,10 @@ SMART count 0.018. The primary score stays `ml_h30`.
 
 Missed failures: 36.2% of eligible events are never timely-captured in any of the 8 cells (2024: 38.1%). SMART
 next day (E1) captures no non-Seagate failure. Under the cooldown HGST favours SMART (E3 .705 vs E4 .488), Seagate
-and WDC favour ML. Explained since (post-test, read-only): the SMART count cannot rank non-Seagate drives
-at the top (`docs/phase5_finding_smart_attribute_availability_2026-11-14.md`), and 88.2% of never-captured
-events were never inspected in any policy, led by two models with almost no SMART warning before failure
-(`docs/phase5_never_caught_breakdown_2026-11-15.md`).
+and WDC favour ML. Described since (post-test, read-only): in the saved E1 log every inspection on every day went to a Seagate drive
+(`docs/phase5_finding_smart_attribute_availability_2026-11-14.md`), and in the seed-0 logs 88.2% of never-captured
+events were never inspected in any policy; the two worst models are those whose failed drives most rarely show a
+SMART warning (an association, not a shown cause; `docs/phase5_never_caught_breakdown_2026-11-15.md`).
 
 Limits: intervals cover resampling of events only; only tie-seed-0 service logs saved; 2024 was used for early
 stopping in Phase 4 (test is the clean period); the fleet mix differs between years; the human independent

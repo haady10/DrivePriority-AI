@@ -1,5 +1,7 @@
 # Review of the Phase 5 test results and of the project (14 Nov 2026)
 
+> Wording corrected 15 Nov 2026 after the independent final review (`docs/phase5_final_review_response_2026-11-15.md`). No number from the test run was changed.
+
 Reviewer: the same AI assistant session that worked on Phase 5 with the coordinator, asked to review its own
 project. It is therefore a SECOND PASS, NOT an independent review. Strong part: every number below was
 recomputed from the raw result files with new code. Weak part: the code review and the judgement of the claims
@@ -13,7 +15,7 @@ The original test results are unchanged; this review changes only how they are r
 1. The one-day drop of 2025-05-12 (69,565 drives absent for one day) was called "negligible" below. The reading
    plan, written before the test, says the results are accepted only if no sudden drop is left unexplained. The
    independent review is right: acceptance is PENDING until the cause is reconciled with the upstream records.
-   Bound computed since: leaving out the 281 eligible events whose window touches 12 or 13 May changes the four
+   Exclusion sensitivity computed since (not a bound on the missing rows): leaving out the 281 eligible events whose window touches 12 or 13 May changes the four
    ML-minus-SMART contrasts by at most 0.23 points (confirmatory: +14.66 against +14.67).
 2. Finding 1 below must be read for the primary budget only. At budgets 10 and 50 the cooldown contrasts with frozen
    ties favour ML in both years and pass the strict replication rule; no rotating-tie runs exist for those budgets.
@@ -45,7 +47,8 @@ Timely capture, 7-day cooldown, budget 20 per 10,000:
 ML minus SMART with day-rotating ties: test -6.3 [-7.4,-5.2] (fresh) and -5.2 [-6.2,-4.2] (queue); 2024 -3.7
 [-4.9,-2.4] and -1.2 [-2.4,+0.0]. For fresh Top-K this passes the strict "replicated" rule in SMART's favour.
 ML minus `smart_count_sum` on test: -3.1 [-4.1,-2.2] and -2.3 [-3.2,-1.4] (2024: +0.4 and -0.3, both include zero).
-The best policy of the whole study on the test period is SMART count with rotating ties, cooldown and queue: 52.8%.
+The highest observed test coverage among the evaluated budget-20 policies and sensitivity runs is SMART count with
+rotating ties, cooldown and queue: 52.8% (not chosen in advance).
 "No reliable difference" understates this. Correct statement: with spaced re-inspection the ML model did not beat
 simple SMART rules, and a SMART rule with rotating ties was ahead in both years. These are pre-specified
 sensitivity runs, not the primary analysis, and must be reported as such.
@@ -124,7 +127,8 @@ seed 0 logs are saved); RQ2 and RQ3 beyond the tables.
 2. At the primary budget (20 per 10,000) no robust ML advantage was established under the 7-day cooldown. SMART count
    with rotating ties was ahead in both years (by 3.7 and 6.3 points with fresh Top-K); SMART count+sum was ahead on
    test. At budgets 10 and 50 the frozen-tie contrasts favour ML in both years.
-3. At budget 20 the best policy on the test period is a SMART rule: SMART count, rotating ties, 7-day cooldown, queue (52.8%).
+3. At budget 20 the highest observed test coverage among the evaluated policies is a SMART rule: SMART count, rotating
+   ties, 7-day cooldown, queue (52.8%). It was not chosen in advance.
 4. Spacing re-inspections (a larger watch-list at the same daily effort) raises capture far more than the choice
    of score; this follows partly from how the simulation counts a capture.
 5. The ML-versus-SMART difference depends on the drive make (ML ahead on Seagate and WDC, SMART far ahead on HGST).
