@@ -1,5 +1,7 @@
 # Literature check against the ten supplied papers, and what DrivePriority AI can claim as new (14 Nov 2026)
 
+> Updated 15 Nov 2026: a wider cross-field search (26 further papers) is summarised in `docs/phase5_wider_literature_review_2026-11-15.md`. It rates C1, C2 and C4 as partly covered and C3 as established practice; the "Not found in the ten" statements below hold only for the ten papers.
+
 > Wording corrected 15 Nov 2026 after the independent final review (`docs/phase5_final_review_response_2026-11-15.md`). No number from the test run was changed. Novelty positioning (final review item 8): the contribution is a stateful inspection-service replay (next-day service, cancellation, cooldown, admission/expiry queue) added to daily alert ranking, plus a frozen evaluation discipline. Prior work already covers capacity-aware alerts and resource-constrained maintenance; credit Li et al. 2018 (resource-dependent migration metrics), Xu et al. 2018 (ranking, time-ordered evaluation), LiteDiskGuard (daily Top-K, multi-horizon lead time, persistence, bootstrap) and PawsPro (decision modelling). The ten-paper check is not systematic: no "first" claim, including "first to model a queue".
 
 Method: the ten PDFs were converted to text and read for (a) what resource or action each one models, (b) how
