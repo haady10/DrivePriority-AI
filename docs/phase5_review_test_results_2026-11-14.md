@@ -16,6 +16,9 @@ The original test results are unchanged; this review changes only how they are r
 1. The one-day drop of 2025-05-12 (69,565 drives absent for one day) was called "negligible" below. The reading
    plan, written before the test, says the results are accepted only if no sudden drop is left unexplained. The
    independent review is right: acceptance is PENDING until the cause is reconciled with the upstream records.
+   *Resolved 14 Nov 2026:* the gap was traced to the original Backblaze archive (one data centre absent on that day,
+   `docs/phase5_may12_gap_root_cause_2026-11-14.md`) and the test results were accepted as computed
+   (`docs/phase5_test_run_record/README.md`); the final independent review of 15 Nov closed this blocker.
    Exclusion sensitivity computed since (not a bound on the missing rows): leaving out the 281 eligible events whose window touches 12 or 13 May changes the four
    ML-minus-SMART contrasts by at most 0.23 points (confirmatory: +14.66 against +14.67).
 2. Finding 1 below must be read for the primary budget only. At budgets 10 and 50 the cooldown contrasts with frozen
