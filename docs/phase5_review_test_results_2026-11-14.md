@@ -5,7 +5,8 @@
 Reviewer: the same AI assistant session that worked on Phase 5 with the coordinator, asked to review its own
 project. It is therefore a SECOND PASS, NOT an independent review. Strong part: every number below was
 recomputed from the raw result files with new code. Weak part: the code review and the judgement of the claims
-(the reviewer already knew both). An independent AI review (other model) and a human review remain open.
+(the reviewer already knew both). An independent AI review (other model) followed on 14-15 Nov, and a human review on 18 Nov
+(`docs/phase5_human_review_2026-11-18.md`).
 
 The study is a decision-support simulation on old data. It does not show that any failure was prevented.
 The original test results are unchanged; this review changes only how they are read.

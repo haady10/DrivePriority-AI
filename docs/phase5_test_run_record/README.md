@@ -111,5 +111,6 @@ events were never inspected in any policy; the two worst models are those whose 
 SMART warning (an association, not a shown cause; `docs/phase5_never_caught_breakdown_2026-11-15.md`).
 
 Limits: intervals cover resampling of events only; only tie-seed-0 service logs saved; 2024 was used for early
-stopping in Phase 4 (test is the clean period); the fleet mix differs between years; the human independent
-review is still open (AI reviews only).
+stopping in Phase 4 (test is the clean period); the fleet mix differs between years; a human review was
+completed later (updated 18 Nov 2026: anonymous reviewer; results kept with qualifications, major revision of the
+manuscript required; `docs/phase5_human_review_2026-11-18.md`).

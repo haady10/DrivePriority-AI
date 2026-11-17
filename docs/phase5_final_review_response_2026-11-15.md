@@ -35,7 +35,7 @@ data; no prevention claim.
 1. One-page policy dashboard: for the Power BI work (Sulaiman) and the manuscript figure.
 2. Read-only checks: E1 make audit done (blocker 1); the 8-failure crosswalk needs the snapshot (lab PC).
 3. Reproducibility appendix: to be assembled from `04_provenance` and the claims file for the manuscript.
-4. Human reviewer: still open.
+4. Human reviewer: done (updated 18 Nov 2026). Anonymous human review: keep the computed results with qualifications; major revision of the manuscript required (`docs/phase5_human_review_2026-11-18.md`).
 
 ## Version 2 (not done; needs a new frozen protocol and an untouched future period)
 

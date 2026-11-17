@@ -7,6 +7,9 @@ section 16, written after the 2024 validation results were seen and after two AI
 committed review `docs/phase5_review_validation_fullfleet_2026-11-13.md` and a second, independent AI review
 of the same package, "accept with changes"). A human independent review is still open.
 
+> Update 18 Nov 2026 (added after the test; the sentence above is kept as written on 13 Nov): a human review has
+> since been completed, see `docs/phase5_human_review_2026-11-18.md`.
+
 The study is a decision-support simulation on old data. It does not show that any failure was prevented.
 
 ## 1. Confirmatory contrast (one)
