@@ -1,0 +1,161 @@
+{
+ "period_end": "2024-12-31",
+ "definitions": {
+  "D0_original": {
+   "ml_h7": {
+    "rows": 94569421,
+    "positives": 108126,
+    "prevalence": 0.0011433505551440354,
+    "average_precision": 0.0743779050927561,
+    "roc_auc": 0.831991667194625,
+    "ap_over_prevalence": 65.05258143106094
+   },
+   "ml_h14": {
+    "rows": 94569421,
+    "positives": 108126,
+    "prevalence": 0.0011433505551440354,
+    "average_precision": 0.06996946754082364,
+    "roc_auc": 0.8243509233421789,
+    "ap_over_prevalence": 61.19686322451572
+   },
+   "ml_h30": {
+    "rows": 94569421,
+    "positives": 108126,
+    "prevalence": 0.0011433505551440354,
+    "average_precision": 0.06490902052529017,
+    "roc_auc": 0.8293738279862974,
+    "ap_over_prevalence": 56.770882939846175
+   },
+   "gbm_h30": {
+    "rows": 94569421,
+    "positives": 108126,
+    "prevalence": 0.0011433505551440354,
+    "average_precision": 0.0491497960098983,
+    "roc_auc": 0.8241440501490391,
+    "ap_over_prevalence": 42.98751226276929
+   },
+   "smart_count": {
+    "rows": 94569421,
+    "positives": 108126,
+    "prevalence": 0.0011433505551440354,
+    "average_precision": 0.02473554102722898,
+    "roc_auc": 0.819423691682611,
+    "ap_over_prevalence": 21.634258116149585
+   },
+   "smart_sum": {
+    "rows": 94569421,
+    "positives": 108126,
+    "prevalence": 0.0011433505551440354,
+    "average_precision": 0.009107539336072175,
+    "roc_auc": 0.8117402189255384,
+    "ap_over_prevalence": 7.965657859784604
+   },
+   "_rows_failing_1_to_7d": 0,
+   "_rows_failing_8_to_31d": 108126
+  },
+  "D2_symmetric_conditional": {
+   "ml_h7": {
+    "rows": 94249205,
+    "positives": 100176,
+    "prevalence": 0.0010628842970081286,
+    "average_precision": 0.069948337816301,
+    "roc_auc": 0.8322751115538319,
+    "ap_over_prevalence": 65.80992683135486
+   },
+   "ml_h14": {
+    "rows": 94249205,
+    "positives": 100176,
+    "prevalence": 0.0010628842970081286,
+    "average_precision": 0.06580628549772215,
+    "roc_auc": 0.8250323876550905,
+    "ap_over_prevalence": 61.91293415751618
+   },
+   "ml_h30": {
+    "rows": 94249205,
+    "positives": 100176,
+    "prevalence": 0.0010628842970081286,
+    "average_precision": 0.06113605330253566,
+    "roc_auc": 0.8301328261118949,
+    "ap_over_prevalence": 57.519010747101206
+   },
+   "gbm_h30": {
+    "rows": 94249205,
+    "positives": 100176,
+    "prevalence": 0.0010628842970081286,
+    "average_precision": 0.044993710715776826,
+    "roc_auc": 0.8246718542561766,
+    "ap_over_prevalence": 42.33171083854363
+   },
+   "smart_count": {
+    "rows": 94249205,
+    "positives": 100176,
+    "prevalence": 0.0010628842970081286,
+    "average_precision": 0.022927506963876326,
+    "roc_auc": 0.8181457188905821,
+    "ap_over_prevalence": 21.5710280304395
+   },
+   "smart_sum": {
+    "rows": 94249205,
+    "positives": 100176,
+    "prevalence": 0.0010628842970081286,
+    "average_precision": 0.008459384560369054,
+    "roc_auc": 0.8105846287459321,
+    "ap_over_prevalence": 7.958895040768825
+   },
+   "_rows_failing_1_to_7d": 0,
+   "_rows_failing_8_to_31d": 100176
+  },
+  "D1_symmetric_allocation": {
+   "ml_h7": {
+    "rows": 94277584,
+    "positives": 100176,
+    "prevalence": 0.0010625643525188342,
+    "average_precision": 0.06098424103791411,
+    "roc_auc": 0.8321517465911288,
+    "ap_over_prevalence": 57.393456587687616
+   },
+   "ml_h14": {
+    "rows": 94277584,
+    "positives": 100176,
+    "prevalence": 0.0010625643525188342,
+    "average_precision": 0.05749803924294133,
+    "roc_auc": 0.8249126592439748,
+    "ap_over_prevalence": 54.11252420301966
+   },
+   "ml_h30": {
+    "rows": 94277584,
+    "positives": 100176,
+    "prevalence": 0.0010625643525188342,
+    "average_precision": 0.05382903259955486,
+    "roc_auc": 0.8300123818329347,
+    "ap_over_prevalence": 50.65955061634794
+   },
+   "gbm_h30": {
+    "rows": 94277584,
+    "positives": 100176,
+    "prevalence": 0.0010625643525188342,
+    "average_precision": 0.04225716953405337,
+    "roc_auc": 0.8245524509644425,
+    "ap_over_prevalence": 39.76904498431717
+   },
+   "smart_count": {
+    "rows": 94277584,
+    "positives": 100176,
+    "prevalence": 0.0010625643525188342,
+    "average_precision": 0.022494485948763708,
+    "roc_auc": 0.8180334372643189,
+    "ap_over_prevalence": 21.16999868802298
+   },
+   "smart_sum": {
+    "rows": 94277584,
+    "positives": 100176,
+    "prevalence": 0.0010625643525188342,
+    "average_precision": 0.00842275026469232,
+    "roc_auc": 0.8104731605723462,
+    "ap_over_prevalence": 7.92681426280299
+   },
+   "_rows_failing_1_to_7d": 28379,
+   "_rows_failing_8_to_31d": 100176
+  }
+ }
+}

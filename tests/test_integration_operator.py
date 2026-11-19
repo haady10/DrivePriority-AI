@@ -345,6 +345,7 @@ def test_interrupted_incremental_checkpoint_resumes_automatically(tmp_path: Path
     assert report["total_integrated_quarters"] == 2
 
 
+@pytest.mark.skipif(os.name != "nt", reason="runs the Windows launcher RUN_INTEGRATION.cmd through cmd.exe")
 def test_launcher_works_from_path_with_spaces(tmp_path: Path) -> None:
     root = tmp_path / "Integration Package With Spaces"
     root.mkdir()

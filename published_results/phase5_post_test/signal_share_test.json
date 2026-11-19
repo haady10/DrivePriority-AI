@@ -1,0 +1,161 @@
+{
+ "eligible_events": 6271,
+ "events_with_rows_in_window": 6271,
+ "median_days_seen": 30.0,
+ "any_signal_share_all": 0.7737202997926965,
+ "by_make": {
+  "HGST": {
+   "events": 1163,
+   "any_signal_share": 0.9002579535683577,
+   "never_captured": 201
+  },
+  "Seagate": {
+   "events": 2488,
+   "any_signal_share": 0.8215434083601286,
+   "never_captured": 661
+  },
+  "Toshiba": {
+   "events": 1865,
+   "any_signal_share": 0.6327077747989276,
+   "never_captured": 1041
+  },
+  "WDC": {
+   "events": 755,
+   "any_signal_share": 0.7695364238410596,
+   "never_captured": 367
+  }
+ },
+ "never_captured": {
+  "events": 2270,
+  "any_signal_share": 0.38458149779735684,
+  "never_inspected_seed0": 2003,
+  "never_inspected_any_signal_share": 0.3110334498252621,
+  "never_inspected_no_signal": 1380,
+  "captured_any_signal_share": 0.9945013746563359,
+  "never_inspected_by_make": {
+   "HGST": {
+    "events": 176,
+    "no_signal": 114
+   },
+   "Seagate": {
+    "events": 549,
+    "no_signal": 412
+   },
+   "Toshiba": {
+    "events": 968,
+    "no_signal": 683
+   },
+   "WDC": {
+    "events": 310,
+    "no_signal": 171
+   }
+  }
+ },
+ "by_model_min40": {
+  "HGST HUH721212ALE604": {
+   "events": 503,
+   "any_signal_share": 0.9085487077534792,
+   "never_captured_share": 0.1749502982107356
+  },
+  "HGST HUH721212ALN604": {
+   "events": 585,
+   "any_signal_share": 0.9435897435897436,
+   "never_captured_share": 0.1111111111111111
+  },
+  "ST10000NM0086": {
+   "events": 83,
+   "any_signal_share": 0.963855421686747,
+   "never_captured_share": 0.04819277108433735
+  },
+  "ST12000NM0007": {
+   "events": 69,
+   "any_signal_share": 0.9855072463768116,
+   "never_captured_share": 0.13043478260869565
+  },
+  "ST12000NM0008": {
+   "events": 704,
+   "any_signal_share": 0.8920454545454546,
+   "never_captured_share": 0.22017045454545456
+  },
+  "ST12000NM001G": {
+   "events": 191,
+   "any_signal_share": 0.8115183246073299,
+   "never_captured_share": 0.3036649214659686
+  },
+  "ST14000NM001G": {
+   "events": 181,
+   "any_signal_share": 0.9005524861878453,
+   "never_captured_share": 0.1878453038674033
+  },
+  "ST14000NM0138": {
+   "events": 93,
+   "any_signal_share": 0.978494623655914,
+   "never_captured_share": 0.043010752688172046
+  },
+  "ST16000NM001G": {
+   "events": 265,
+   "any_signal_share": 0.8905660377358491,
+   "never_captured_share": 0.21509433962264152
+  },
+  "ST24000NM002H": {
+   "events": 297,
+   "any_signal_share": 0.21885521885521886,
+   "never_captured_share": 0.8047138047138047
+  },
+  "ST8000DM002": {
+   "events": 194,
+   "any_signal_share": 0.9226804123711341,
+   "never_captured_share": 0.20103092783505155
+  },
+  "ST8000NM0055": {
+   "events": 382,
+   "any_signal_share": 0.9345549738219895,
+   "never_captured_share": 0.13350785340314136
+  },
+  "TOSHIBA MG07ACA14TA": {
+   "events": 650,
+   "any_signal_share": 0.8107692307692308,
+   "never_captured_share": 0.4
+  },
+  "TOSHIBA MG08ACA16TA": {
+   "events": 520,
+   "any_signal_share": 0.6538461538461539,
+   "never_captured_share": 0.5711538461538461
+  },
+  "TOSHIBA MG08ACA16TE": {
+   "events": 110,
+   "any_signal_share": 0.6909090909090909,
+   "never_captured_share": 0.43636363636363634
+  },
+  "TOSHIBA MG08ACA16TEY": {
+   "events": 364,
+   "any_signal_share": 0.2664835164835165,
+   "never_captured_share": 0.8516483516483516
+  },
+  "TOSHIBA MG10ACA20TE": {
+   "events": 166,
+   "any_signal_share": 0.6686746987951807,
+   "never_captured_share": 0.5060240963855421
+  },
+  "WDC WUH721414ALE6L4": {
+   "events": 92,
+   "any_signal_share": 0.7608695652173914,
+   "never_captured_share": 0.391304347826087
+  },
+  "WDC WUH721816ALE6L0": {
+   "events": 105,
+   "any_signal_share": 0.9523809523809523,
+   "never_captured_share": 0.29523809523809524
+  },
+  "WDC WUH721816ALE6L4": {
+   "events": 290,
+   "any_signal_share": 0.7931034482758621,
+   "never_captured_share": 0.4896551724137931
+  },
+  "WDC WUH722222ALE6L4": {
+   "events": 241,
+   "any_signal_share": 0.7219917012448133,
+   "never_captured_share": 0.5684647302904564
+  }
+ }
+}

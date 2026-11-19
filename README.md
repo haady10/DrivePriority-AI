@@ -42,18 +42,30 @@ cost are prevented.
 - Reviews and responses: `docs/phase5_review_*.md`, `docs/phase5_final_review_response_2026-11-15.md`,
   `docs/manuscript_v1_review_response_2026-11-18.md`.
 
-Large files (saved models, scored data, service logs, the integrated snapshot) are not in this repository.
+The complete result archives of both Phase 5 replays (result tables, per-event capture results, the seed-0 service
+logs) are in `published_results/phase5/` with SHA-256 checksums, and the post hoc outputs in `published_results/phase5_post_test/`
+(see `published_results/README.md`). Check them with `python tools/verify_results.py`.
+
+Large files (saved models, the daily scores of the whole fleet, about 1.7 GB, and the integrated snapshot) are not
+in this repository; they are available from the authors on request.
 
 ## Running the tests
 
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python -m pytest tests -q
+python -m pytest tests -q              # conftest.py puts src/ on the path; no PYTHONPATH needed
+python tools/verify_results.py         # result archives only (pandas + pyarrow), a few seconds
 ```
 
-The Windows launchers (`*.cmd`, `*.ps1`) wrap the same Python entry points for the team's lab machines. The H2O
-test is opt-in because it needs Java and a local H2O cluster.
+The Windows launchers (`*.cmd`, `*.ps1`) wrap the same Python entry points for the team's lab machines; the test
+that runs a launcher through `cmd.exe` is skipped on other systems. The H2O smoke test is opt-in because it needs
+Java and starts a local H2O cluster: set `DRIVEPRIORITY_RUN_H2O=1` to run it. Training the models needs H2O
+3.46.0.12 and Java; verifying and re-analysing the saved results does not.
+
+On 19 November 2026 the suite, with the H2O file excluded, gave 403 passed, 4 skipped and one failure on Linux
+(the Windows launcher test);
+after the guards of 20 November it gives 405 passed and 6 skipped on Linux (Python 3.13).
 
 ## Data
 
@@ -62,4 +74,5 @@ The raw data are not redistributed here.
 
 ## Licence
 
-No licence has been chosen yet; until one is added, all rights are reserved by the authors.
+No licence has been chosen yet; until one is added, all rights are reserved by the authors. Choosing a licence
+and making a versioned release (tag) that the manuscript can cite are decisions for the authors.

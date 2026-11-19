@@ -1,7 +1,17 @@
+"""Opt-in H2O smoke test: needs Java and starts a local H2O cluster.
+
+Skipped unless the environment variable DRIVEPRIORITY_RUN_H2O=1 is set (README, "Running the tests").
+"""
+import os
+
+import pytest
+
+if os.environ.get("DRIVEPRIORITY_RUN_H2O") != "1":
+    pytest.skip("H2O smoke test is opt-in: set DRIVEPRIORITY_RUN_H2O=1 (needs Java)", allow_module_level=True)
+h2o = pytest.importorskip("h2o")
 
 import numpy as np
 import pandas as pd
-import h2o
 from h2o.estimators import H2OGradientBoostingEstimator
 
 # Generate artificial data for testing

@@ -1,0 +1,13 @@
+{
+ "replay_dir": "OneDrive 05_Phase5_RESULTS/05_replay_inputs/scores_valid/replay_valid (frozen 2024 replay input)",
+ "day": "2025-01-01",
+ "drives_failing_that_day": 6,
+ "drive_ids": [
+  "5PHLA5TD|HGST HUH721212ALE604",
+  "5PJABAAD|HGST HUH721212ALE604",
+  "8DGARWXH|HGST HUH721212ALN604",
+  "ZA11VGWK|ST8000DM002",
+  "ZHZ69GPP|ST12000NM0008",
+  "ZL005DFZ|ST12000NM0008"
+ ]
+}

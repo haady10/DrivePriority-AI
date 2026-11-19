@@ -1,0 +1,43 @@
+{
+ "day": "2025-06-02",
+ "drives_observed": 315806,
+ "capacity_B20": 631,
+ "by_make": {
+  "Seagate": {
+   "drives": 109381,
+   "highest_count": 5,
+   "count_4_or_5": 850,
+   "count_1_or_more": 15537
+  },
+  "Toshiba": {
+   "drives": 104368,
+   "highest_count": 3,
+   "count_4_or_5": 0,
+   "count_1_or_more": 4155
+  },
+  "WDC": {
+   "drives": 74764,
+   "highest_count": 3,
+   "count_4_or_5": 0,
+   "count_1_or_more": 1302
+  },
+  "HGST": {
+   "drives": 27293,
+   "highest_count": 3,
+   "count_4_or_5": 0,
+   "count_1_or_more": 2551
+  }
+ },
+ "all_days": {
+  "days": 546,
+  "days_with_count_4_or_5_at_least_K": 546,
+  "smallest_margin": 171.0,
+  "largest_non_seagate_count_4_or_5": 0
+ },
+ "drive_day_share_by_make": {
+  "WDC": 0.24361282306751833,
+  "HGST": 0.08407162287209748,
+  "Toshiba": 0.3335165579208125,
+  "Seagate": 0.33879899613957176
+ }
+}

@@ -1,0 +1,151 @@
+{
+ "eligible_events": 4210,
+ "events_with_rows_in_window": 4210,
+ "median_days_seen": 30.0,
+ "any_signal_share_all": 0.815914489311164,
+ "by_make": {
+  "HGST": {
+   "events": 1044,
+   "any_signal_share": 0.8697318007662835,
+   "never_captured": 273
+  },
+  "Seagate": {
+   "events": 1800,
+   "any_signal_share": 0.8844444444444445,
+   "never_captured": 432
+  },
+  "Toshiba": {
+   "events": 1050,
+   "any_signal_share": 0.6866666666666666,
+   "never_captured": 713
+  },
+  "WDC": {
+   "events": 316,
+   "any_signal_share": 0.6772151898734177,
+   "never_captured": 188
+  }
+ },
+ "never_captured": {
+  "events": 1606,
+  "any_signal_share": 0.5193026151930261,
+  "never_inspected_seed0": 1334,
+  "never_inspected_any_signal_share": 0.4272863568215892,
+  "never_inspected_no_signal": 764,
+  "captured_any_signal_share": 0.9988479262672811,
+  "never_inspected_by_make": {
+   "HGST": {
+    "events": 239,
+    "no_signal": 136
+   },
+   "Seagate": {
+    "events": 303,
+    "no_signal": 205
+   },
+   "Toshiba": {
+    "events": 645,
+    "no_signal": 325
+   },
+   "WDC": {
+    "events": 147,
+    "no_signal": 98
+   }
+  }
+ },
+ "by_model_min40": {
+  "HGST HUH721212ALE604": {
+   "events": 410,
+   "any_signal_share": 0.8536585365853658,
+   "never_captured_share": 0.3195121951219512
+  },
+  "HGST HUH721212ALN604": {
+   "events": 555,
+   "any_signal_share": 0.9153153153153153,
+   "never_captured_share": 0.1891891891891892
+  },
+  "ST10000NM0086": {
+   "events": 54,
+   "any_signal_share": 1.0,
+   "never_captured_share": 0.037037037037037035
+  },
+  "ST12000NM0007": {
+   "events": 110,
+   "any_signal_share": 0.9545454545454546,
+   "never_captured_share": 0.12727272727272726
+  },
+  "ST12000NM0008": {
+   "events": 454,
+   "any_signal_share": 0.8722466960352423,
+   "never_captured_share": 0.2841409691629956
+  },
+  "ST12000NM001G": {
+   "events": 152,
+   "any_signal_share": 0.7828947368421053,
+   "never_captured_share": 0.3223684210526316
+  },
+  "ST14000NM001G": {
+   "events": 160,
+   "any_signal_share": 0.91875,
+   "never_captured_share": 0.18125
+  },
+  "ST14000NM0138": {
+   "events": 66,
+   "any_signal_share": 0.9242424242424242,
+   "never_captured_share": 0.13636363636363635
+  },
+  "ST16000NM001G": {
+   "events": 184,
+   "any_signal_share": 0.8532608695652174,
+   "never_captured_share": 0.29891304347826086
+  },
+  "ST4000DM000": {
+   "events": 109,
+   "any_signal_share": 0.8623853211009175,
+   "never_captured_share": 0.29357798165137616
+  },
+  "ST8000DM002": {
+   "events": 145,
+   "any_signal_share": 0.8827586206896552,
+   "never_captured_share": 0.16551724137931034
+  },
+  "ST8000NM0055": {
+   "events": 328,
+   "any_signal_share": 0.9298780487804879,
+   "never_captured_share": 0.19817073170731708
+  },
+  "TOSHIBA MG07ACA14TA": {
+   "events": 380,
+   "any_signal_share": 0.6921052631578948,
+   "never_captured_share": 0.6973684210526315
+  },
+  "TOSHIBA MG08ACA16TA": {
+   "events": 435,
+   "any_signal_share": 0.7448275862068966,
+   "never_captured_share": 0.7034482758620689
+  },
+  "TOSHIBA MG08ACA16TE": {
+   "events": 66,
+   "any_signal_share": 0.7727272727272727,
+   "never_captured_share": 0.5303030303030303
+  },
+  "TOSHIBA MG08ACA16TEY": {
+   "events": 79,
+   "any_signal_share": 0.620253164556962,
+   "never_captured_share": 0.5443037974683544
+  },
+  "WDC WUH721414ALE6L4": {
+   "events": 69,
+   "any_signal_share": 0.7101449275362319,
+   "never_captured_share": 0.4927536231884058
+  },
+  "WDC WUH721816ALE6L4": {
+   "events": 77,
+   "any_signal_share": 0.4935064935064935,
+   "never_captured_share": 0.8181818181818182
+  },
+  "WDC WUH722222ALE6L4": {
+   "events": 129,
+   "any_signal_share": 0.7751937984496124,
+   "never_captured_share": 0.5658914728682171
+  }
+ }
+}
