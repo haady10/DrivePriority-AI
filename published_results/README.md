@@ -41,5 +41,10 @@ No model was retrained and no policy was replayed. Scripts are in `tools/phase5_
 | `time_block_bootstrap.json` | `time_block_bootstrap.py` | Primary contrasts with whole calendar weeks resampled (4,000 resamples) |
 | `smart_count_day_facts_test.json`, `smart_count_day_facts_2024.json` | `smart_count_day_facts.py` | Replay-population drive counts and SMART-count facts of one day, and the every-day check that drives with a count of 4 or 5 outnumber the slots |
 | `first_day_failures_2025-01-01.json` | `first_day_failures.py` | The six drives observed in 2024 that failed on 2025-01-01 (part of the 112 cohort failures outside every selection) |
+| `by_make_test.csv`, `by_make_2024.csv` | `by_make_table.py` | Timely capture by manufacturer with paired event-bootstrap intervals (engine bootstrap, seed 20261111); manuscript Table XI and Fig. 5 |
 
 The drive-model cluster bootstrap of 18 November is in `docs/phase5_test_run_record/model_cluster_bootstrap.json`.
+
+The data behind every manuscript table and the six figures can be rebuilt from these files with
+`python tools/manuscript_tables_figures.py <out_dir>` (pandas, pyarrow, matplotlib); the manuscript text is not in
+this repository.
