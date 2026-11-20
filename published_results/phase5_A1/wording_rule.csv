@@ -1,0 +1,9 @@
+reinspection,scheduling,claim,allowed,fails_against
+next,fresh,ML better,False,S2/day S4/day S5/day
+next,fresh,SMART better,False,S1/drive S1/day S2/drive S2/day S3/drive S3/day S4/drive S5/drive
+next,queue,ML better,False,S2/day S4/day S5/day
+next,queue,SMART better,False,S1/drive S1/day S2/drive S2/day S3/drive S3/day S4/drive S5/drive
+cool,fresh,ML better,False,S1/drive S1/day S2/drive S2/day S3/drive S3/day S4/day S5/day
+cool,fresh,SMART better,False,S1/drive S2/drive S3/drive S3/day S4/drive S4/day S5/drive S5/day
+cool,queue,ML better,False,S1/drive S1/day S2/drive S2/day S3/drive S3/day S4/day S5/day
+cool,queue,SMART better,False,S1/drive S2/drive S3/drive S4/drive S4/day S5/drive S5/day

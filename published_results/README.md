@@ -48,3 +48,18 @@ The drive-model cluster bootstrap of 18 November is in `docs/phase5_test_run_rec
 The data behind every manuscript table and the six figures can be rebuilt from these files with
 `python tools/manuscript_tables_figures.py <out_dir>` (pandas, pyarrow, matplotlib); the manuscript text is not in
 this repository.
+
+## `phase5_A1/` (post hoc, amendment A1 of 20 November 2026)
+
+Fairer SMART baselines, replayed after all frozen results had been seen (not blind; see
+`docs/phase5_amendment_A1_fair_baselines_2026-11-20.md` and `docs/phase5_amendment_A1_results_2026-11-20.md`).
+Code: `src/drivepriority/posthoc/fair_baselines.py`, commit 8e3771d, run on the lab PC on 20 November 2026.
+
+| File | Content |
+|---|---|
+| `posthoc_A1_valid_results.zip`, `posthoc_A1_test_results.zip` | As produced by the replay step: `cells.csv` (168 cells), `contrasts.csv` (216 differences), `event_capture.parquet` (per-event capture, mean over seeds, every cell), `reproduction.json` (gate: 344 values equal to the frozen results), `run_info.json` (commit, input and code SHA-256), `progress.log`, `make_by_model.csv`, the build manifest and the SMART availability by make. SHA-256 in `SHA256SUMS.txt` |
+| `A1_all_cells.csv` | All 336 cells of both periods (key columns, including the Seagate share and the distinct drives inspected) |
+| `A1_all_contrasts.csv` | All 432 paired differences of both periods |
+| `wording_rule.csv` | The A1.6 reporting rule applied to the two archives (`fair_baselines.py summarise`); reproduced identically from the zips on Linux |
+
+`tools/a1_tables.py` reads these files for the manuscript tables (called by `tools/manuscript_tables_figures.py`).

@@ -1,6 +1,7 @@
 """Rebuilds the data behind every manuscript table (data.json) and the six figures from the published results.
 
-Reads only published_results/phase5/*.zip (extracted to a temporary folder) and published_results/phase5_post_test/.
+Reads only published_results/phase5/*.zip (extracted to a temporary folder), published_results/phase5_post_test/ and
+(since V4) published_results/phase5_A1/ through tools/a1_tables.py.
 No number is typed by hand. The manuscript text itself is not part of this repository.
 
 Usage: python tools/manuscript_tables_figures.py <out_dir>    (needs pandas, pyarrow, matplotlib)
@@ -182,6 +183,10 @@ for per in ("test", "valid"):
                                     "prec": f"{x.inspection_precision_30d * 100:.1f}", "any": r1(x.any_prior_capture)}
 v3["sec"] = sec
 D["v3"] = v3
+# ---------- V4: amendment A1 (post hoc fairer SMART baselines), from published_results/phase5_A1 ----------
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from a1_tables import a1_data
+D["a1"] = a1_data()
 json.dump(D, open(OUT / "data.json", "w"), indent=1, ensure_ascii=False)
 
 # =================== FIGURES ===================

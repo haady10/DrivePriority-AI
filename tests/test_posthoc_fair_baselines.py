@@ -308,6 +308,9 @@ def test_summarise_wording_rule(tmp_path):
     ml = w[w.claim == "ML better"].set_index(["reinspection", "scheduling"]).allowed
     assert ml[("next", "fresh")] and ml[("next", "queue")]
     assert not ml[("cool", "fresh")] and not ml[("cool", "queue")]
+    # --out may also be a folder (it was a file-only argument before 20 Nov 2026)
+    fb.cmd_summarise(Args(valid=str(tmp_path / "valid"), test=str(tmp_path / "test"), out=str(tmp_path / "outdir")))
+    assert (tmp_path / "outdir" / "wording_rule.csv").read_text() == (tmp_path / "w.csv").read_text()
 
 
 def test_parallel_seeds_give_identical_results(world):

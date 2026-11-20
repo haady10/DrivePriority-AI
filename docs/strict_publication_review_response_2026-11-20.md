@@ -123,3 +123,23 @@ is opened. An actionable-label model (new training) is needed only for mechanism
 - `conftest.py`, `tests/test_h2o_setup.py`, `tests/test_integration_operator.py`, `.gitignore`, `README.md`.
 - `docs/phase5_claims_and_limitations_2026-11-14.md`: A20, A28, A29, A33, B5, B11, B20 updated with dated notes;
   new A39–A48, B23, B24.
+
+## 6. Update after amendment A1 (manuscript V4, 20 Nov 2026, evening)
+
+Amendment A1 was run on the lab PC (2024, then the test period once), both reproduction gates passed (344 values
+each, 0 rule violations). Results: `docs/phase5_amendment_A1_results_2026-11-20.md`; archives:
+`published_results/phase5_A1/`.
+
+| Item | Status after V4 |
+|---|---|
+| F1c Fairer SMART baselines (three-indicator count, within-make rank, make quotas), rotating ties at budgets 10 and 50 | **Done, post hoc.** Manuscript V4 Section VI-I, Tables XV, XVI and XX; abstract, contributions, VI-B/C/D/E pointers, VII, VIII, IX rewritten. By the pre-fixed rule A1.6 no policy allows "ML better" or "SMART better". The general ML-over-SMART claim is withdrawn; the confirmatory contrast is kept as computed and read as a result against the frozen count only |
+| F1 (claims) | V4 says the +14.7 points are not evidence that a learned score beats SMART-based triage |
+| F2b Matched-effort comparison | Still not run. V4 adds a descriptive equal-slot statement (capture vs distinct drives, Spearman 0.95 / 0.91) and says it is not a matched-effort comparison |
+| F5b The 106 unplaced failures | Still open (A1.7 code ready; needs the snapshot on the lab PC) |
+| F6e Per-event results for every policy | Done for all A1 cells (`event_capture.parquet`, mean over seeds); drive-model intervals for A1 not computed |
+| P1, F8c, P3 (e-mails, licence and release, venue) | Owner decisions, still open |
+| P7 references | Still open: Wei et al. 2025 (Scientific Data) author list; Pecht and Elburn 2020 volume and pages |
+
+**Verdict after V4: still not ready to submit**, now only because of the owner items (e-mails, licence, versioned
+release, venue and page limit) and the two reference checks. The main scientific gap of the review (F1c) is closed
+as far as the seen periods allow; a confirmatory test needs an untouched period.

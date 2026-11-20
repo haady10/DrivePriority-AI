@@ -775,7 +775,12 @@ def cmd_summarise(a) -> int:
     out = pd.DataFrame(rows)
     print(out.to_string(index=False))
     if a.out:
-        out.to_csv(a.out, index=False)
+        dest = Path(a.out)
+        if dest.is_dir() or not dest.suffix:          # a folder was given: write wording_rule.csv inside it
+            dest.mkdir(parents=True, exist_ok=True)
+            dest = dest / "wording_rule.csv"
+        out.to_csv(dest, index=False)
+        print(f"saved {dest}")
     return 0
 
 

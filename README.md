@@ -28,7 +28,7 @@ cost are prevented.
 | 2-3 | Data profile; labels (7/14/30 days), past-only features, date splits, HDD cohort | `src/drivepriority/features/` (`build_dataset.py`, `hdd_filter.py`), `RUN_PHASE3.cmd` | `docs/data_pipeline_runbook.md` |
 | 4 | H2O models (LR, GLM, GBM, DRF) and SMART baselines; protocol frozen before final runs | `src/drivepriority/models/train_h2o.py` | `docs/protocol_frozen_before_test.md` |
 | 5 | Full-fleet scoring and the stateful inspection replay (RQ1-RQ3) | `src/drivepriority/simulation/` | `docs/phase5_protocol.md`, `configs/phase5_protocol_v1.json`, `docs/phase5_runbook.md` |
-| A1 | Post hoc (after the test results): fairer SMART baselines, make quotas, the 112 unplaced failures | `src/drivepriority/posthoc/`, `RUN_POST_HOC.cmd` | `docs/phase5_amendment_A1_fair_baselines_2026-11-20.md`, `docs/posthoc_A1_lab_pc_guide_2026-11-20.md` |
+| A1 | Post hoc (after the test results): fairer SMART baselines, make quotas, the 112 unplaced failures | `src/drivepriority/posthoc/`, `RUN_POST_HOC.cmd`; results in `published_results/phase5_A1/` | `docs/phase5_amendment_A1_fair_baselines_2026-11-20.md`, `docs/posthoc_A1_lab_pc_guide_2026-11-20.md`, `docs/phase5_amendment_A1_results_2026-11-20.md` |
 
 ## Evidence for the manuscript
 
