@@ -88,6 +88,15 @@ and page limit (V3 is 15 pages; the Appendix and Tables VII, VIII and XV–XVII 
 
 Analyses (read-only, lab PC): itemise the 106 remaining failures from the snapshot; re-check the reference list.
 
+**Update, 20 Nov 2026 (later the same day).** Amendment A1 (`docs/phase5_amendment_A1_fair_baselines_2026-11-20.md`)
+fixes experiment 1 below and the itemisation of the unplaced failures before either is run, and its code is in
+`src/drivepriority/posthoc/` with a step-by-step guide (`docs/posthoc_A1_lab_pc_guide_2026-11-20.md`). Correction to
+the line below: the single SMART values are also in the full-fleet feature files (`features_valid_*`,
+`features_test_*`), so experiment 1 needs those files and the frozen replay inputs, not the snapshot; only the
+unplaced failures need the snapshot. A1 runs both tie orders, not only rotating ties, and keeps the per-event
+results (mean over seeds) of every A1 cell. Experiment 2 (a matched-effort service rule) is not part of A1; A1
+reports equal effort descriptively only.
+
 Experiments, to be recorded first as a dated protocol amendment and reported as post hoc (they use periods that
 have been seen):
 

@@ -370,3 +370,13 @@ and nothing was rerun. Tests: 51 pass, 1 skipped.
   lists `input_calendar_days_with_no_rows`. The list is reported, not gated, because a day can legitimately have
   no rows (the terminal service-only day of a split, or a source outage such as 2025-05-12). The reading plan of
   13 November requires any such day to be explained before the results are accepted.
+
+### A1 (post hoc analysis, written 20 Nov 2026, before it was run)
+
+After the strict publication review of 19 Nov 2026: fairer SMART baselines (three indicators every make reports,
+a within-make percentile, make quotas for SMART and for ML), both tie orders, budgets 10, 20 and 50, on the 2024
+and the test period, plus an itemised list of the 112 unplaced failures. It is an **analysis added after the test
+results were seen**, not a change to any frozen setting: the protocol file, the engine, the frozen results and the
+one-time test replay record stay as they are. The full text, the reproduction gate and the reporting rules fixed in
+advance are in `docs/phase5_amendment_A1_fair_baselines_2026-11-20.md`. Code: `src/drivepriority/posthoc/`.
+Every result from it is labelled "post hoc (amendment A1)".

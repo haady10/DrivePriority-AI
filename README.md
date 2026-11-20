@@ -28,6 +28,7 @@ cost are prevented.
 | 2-3 | Data profile; labels (7/14/30 days), past-only features, date splits, HDD cohort | `src/drivepriority/features/` (`build_dataset.py`, `hdd_filter.py`), `RUN_PHASE3.cmd` | `docs/data_pipeline_runbook.md` |
 | 4 | H2O models (LR, GLM, GBM, DRF) and SMART baselines; protocol frozen before final runs | `src/drivepriority/models/train_h2o.py` | `docs/protocol_frozen_before_test.md` |
 | 5 | Full-fleet scoring and the stateful inspection replay (RQ1-RQ3) | `src/drivepriority/simulation/` | `docs/phase5_protocol.md`, `configs/phase5_protocol_v1.json`, `docs/phase5_runbook.md` |
+| A1 | Post hoc (after the test results): fairer SMART baselines, make quotas, the 112 unplaced failures | `src/drivepriority/posthoc/`, `RUN_POST_HOC.cmd` | `docs/phase5_amendment_A1_fair_baselines_2026-11-20.md`, `docs/posthoc_A1_lab_pc_guide_2026-11-20.md` |
 
 ## Evidence for the manuscript
 
@@ -65,7 +66,8 @@ Java and starts a local H2O cluster: set `DRIVEPRIORITY_RUN_H2O=1` to run it. Tr
 
 On 19 November 2026 the suite, with the H2O file excluded, gave 403 passed, 4 skipped and one failure on Linux
 (the Windows launcher test);
-after the guards of 20 November it gives 405 passed and 6 skipped on Linux (Python 3.13).
+after the guards of 20 November it gives 405 passed and 6 skipped on Linux (Python 3.13), and with the amendment A1
+code 418 passed and 6 skipped.
 
 ## Data
 
