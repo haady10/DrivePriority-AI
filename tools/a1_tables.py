@@ -33,7 +33,8 @@ def a1_data() -> dict:
             key = f"{per}|{r.tie_mode}|{int(r.budget_per_10000)}|{r.reinspection}|{r.scheduling}|{SCORES[r.score]}"
             out["cells"][key] = {"cov": r.coverage, "lo": r.coverage_ci_low, "hi": r.coverage_ci_high,
                                  "seagate": r.share_completed_Seagate, "distinct": r.distinct_drives_inspected,
-                                 "completed": r.completed}
+                                 "completed": r.completed,
+                                 "share": {m: float(r[f"share_completed_{m}"]) for m in ("Seagate", "HGST", "Toshiba", "WDC")}}
         for _, r in k.iterrows():
             key = f"{per}|{r.tie}|{int(r.budget)}|{r.reinspection}|{r.scheduling}|{r.contrast}"
             out["contrasts"][key] = [r.estimate, r.ci_low, r.ci_high]
