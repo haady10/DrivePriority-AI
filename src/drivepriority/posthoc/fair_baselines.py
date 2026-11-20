@@ -304,19 +304,32 @@ def load_inputs(replay: Path, extras: Path, first: date, last: date, out: Path |
     x_parts = [p.name for p in part_files(extras)]
     if r_parts != x_parts:
         raise SystemExit(f"The side files ({len(x_parts)}) do not match the replay parts ({len(r_parts)}); run build again")
-    tbl = ds.dataset(str(extras), format="parquet").to_table(columns=["date", "smart_count", "smart_count3"])
+    import pyarrow.compute as pc
+    fmt = ds.ParquetFileFormat(read_options={"dictionary_columns": ["drive_id"]})
+    tbl = ds.dataset(str(extras), format=fmt).to_table(columns=["drive_id", "date", "smart_count", "smart_count3"])
     day = tbl["date"].cast(pa.date32()).cast(pa.int32()).to_numpy().astype(np.int32)
     sc = tbl["smart_count"].to_numpy().astype(np.float64)
     c3 = tbl["smart_count3"].to_numpy().astype(np.float64)
-    del tbl
+    # Drive identity of every side-file row, as an index into the frozen loader's drive list (added 20 Nov 2026
+    # after the A1 runs, review of V4: day and smart_count alone would not catch two drives swapped within a day).
+    ids = tbl["drive_id"]
+    if not pa.types.is_dictionary(ids.type):
+        ids = pc.dictionary_encode(ids)
+    ids = ids.unify_dictionaries().combine_chunks()
+    pos = {d: i for i, d in enumerate(data.drive_ids)}
+    remap = np.array([pos.get(x, -1) for x in ids.dictionary.to_pylist()], dtype=np.int32)
+    side_drive = remap[ids.indices.to_numpy(zero_copy_only=False)]
+    del tbl, ids
     if len(day) != len(data.day):
         raise SystemExit(f"Side files hold {len(day):,} rows, the replay input {len(data.day):,}")
     if len(day) and not np.all(day[1:] >= day[:-1]):                 # same rule as the frozen loader
         order = np.argsort(day, kind="stable")
-        day, sc, c3 = day[order], sc[order], c3[order]
+        day, sc, c3, side_drive = day[order], sc[order], c3[order], side_drive[order]
     if not np.array_equal(day, data.day) or not np.array_equal(sc, data.scores["smart_count"]):
         raise SystemExit("The side files are not row-aligned with the replay input (day or smart_count differ); "
                          "run build again")
+    if not np.array_equal(side_drive, data.drive):
+        raise SystemExit("The side files are not row-aligned with the replay input (drive_id differs); run build again")
     if np.any(c3 > sc):
         raise SystemExit("smart_count3 is larger than smart_count on some row; stopping")
     log(out, f"  {len(day):,} rows, {data.n_drives:,} drives, {data.n_days} days; side files aligned on every row")

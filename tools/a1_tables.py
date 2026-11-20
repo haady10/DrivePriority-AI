@@ -39,6 +39,15 @@ def a1_data() -> dict:
             out["contrasts"][key] = [r.estimate, r.ci_low, r.ci_high]
         av = _read(split, f"smart_availability_by_make_{split}.csv")
         out["run"][per]["min_reported_share_5_197_198"] = float(av[["reported_share_5", "reported_share_197", "reported_share_198"]].min().min())
+    # drive-model cluster intervals (tools/phase5_post_test/a1_model_cluster_bootstrap.py), when present
+    mc_file = A1 / "A1_model_cluster_bootstrap.csv"
+    out["model_ci"] = {}
+    if mc_file.exists():
+        mc = pd.read_csv(mc_file)
+        for _, r in mc.iterrows():
+            per = "valid" if str(r.period) == "2024" else "test"
+            key = f"{per}|{r.tie}|{int(r.budget)}|{r.reinspection}|{r.scheduling}|{r.difference}"
+            out["model_ci"][key] = [r.estimate, r.model_ci_low, r.model_ci_high]
     w = pd.read_csv(A1 / "wording_rule.csv")
     out["rule"] = w.fillna("").to_dict(orient="records")
     # derived facts used in the text (all computed here, not typed)
@@ -61,6 +70,10 @@ def a1_data() -> dict:
         b20 = pd.DataFrame([v for k, v in cells.items() if k.startswith(per + "|") and "|20|" in k])
         out["checks"][f"{per}|spearman_distinct_cov_B20"] = float(b20["distinct"].corr(b20["cov"], method="spearman"))
         out["checks"][f"{per}|n_cells_B20"] = int(len(b20))
+        for b in (10, 20, 50):                                   # A1.6 item 5: distinct drives and completed inspections
+            cb = pd.DataFrame([v for k, v in cells.items() if k.startswith(per + "|") and f"|{b}|" in k])
+            out["checks"][f"{per}|spearman_B{b}"] = [float(cb["distinct"].corr(cb["cov"], method="spearman")),
+                                                     float(cb["completed"].corr(cb["cov"], method="spearman")), int(len(cb))]
     return out
 
 

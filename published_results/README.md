@@ -61,5 +61,6 @@ Code: `src/drivepriority/posthoc/fair_baselines.py`, commit 8e3771d, run on the 
 | `A1_all_cells.csv` | All 336 cells of both periods (key columns, including the Seagate share and the distinct drives inspected) |
 | `A1_all_contrasts.csv` | All 432 paired differences of both periods |
 | `wording_rule.csv` | The A1.6 reporting rule applied to the two archives (`fair_baselines.py summarise`); reproduced identically from the zips on Linux |
+| `A1_model_cluster_bootstrap.csv`, `A1_model_cluster_check.json` | Drive-model cluster intervals of all 432 A1 differences (A1.6 item 6; `tools/phase5_post_test/a1_model_cluster_bootstrap.py`, same method as Table IX: 4,000 draws, seed 7). The check file shows that the script reproduces the frozen Table IX intervals exactly |
 
 `tools/a1_tables.py` reads these files for the manuscript tables (called by `tools/manuscript_tables_figures.py`).

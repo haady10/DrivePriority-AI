@@ -72,8 +72,11 @@ def _cell(data: ReplayData, c: np.ndarray, make_of_drive: np.ndarray, a: int, b:
 class QuotaRanker:
     """Make quotas by the Webster (Sainte-Lague) order. Inside each make: score, then tie key; a drive at
     place r of a make with n drives observed today gets the key (r + 0.5) / n; the day is ordered by that key,
-    then by the tie key. Any first K places then hold each make in proportion to its share of today's drives
-    (within one place)."""
+    then by the tie key. Any first K places are the Webster (Sainte-Lague) allocation of K places to the makes,
+    which is approximately proportional to each make's share of today's drives. It is NOT always within one place
+    of the exact share (e.g. 73/9/9/9 drives, K = 7 gives 4/1/1/1 against 5.11 for the largest make); the bound is
+    |a - K*s| <= 1/2 + s*n/2 for a make with share s among n makes with drives. (Docstring corrected on
+    20 Nov 2026 after the A1 runs; the code is unchanged.)"""
 
     def __init__(self, data: ReplayData, values: np.ndarray, make_of_drive: np.ndarray, seed: int,
                  tie_mode: str = "drive"):

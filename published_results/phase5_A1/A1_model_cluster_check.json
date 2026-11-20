@@ -1,0 +1,19 @@
+{
+ "method": "drive-model clusters, 4000 draws, default_rng(7), percentile 95%",
+ "2024": {
+  "events": 4210,
+  "models": 44,
+  "largest_model_events": 555,
+  "primary_models": 44,
+  "max_abs_diff_points_vs_table_IX": 8.881784197001252e-16,
+  "reproduces_table_IX": true
+ },
+ "test": {
+  "events": 6271,
+  "models": 42,
+  "largest_model_events": 704,
+  "primary_models": 42,
+  "max_abs_diff_points_vs_table_IX": 8.881784197001252e-16,
+  "reproduces_table_IX": true
+ }
+}

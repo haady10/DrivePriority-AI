@@ -136,9 +136,16 @@ def test_quota_order_is_proportional_and_consistent(tmp_path):
             assert complete
             rows = data.rows_of_day(i)
             n_m = np.bincount(mk[data.drive[rows]], minlength=len(MAKES))
+            share = n_m / n_m.sum()
+            n_present = int((n_m > 0).sum())
             for K in (1, 5, 17, 40):
                 got = np.bincount(mk[order[:K]], minlength=len(MAKES))
-                assert np.all(np.abs(got - K * n_m / n_m.sum()) <= 1.0 + 1e-9)
+                # the provable Webster bound (not "within one place", which can fail: see the next test)
+                assert np.all(np.abs(got - K * share) <= 0.5 + share * n_present / 2 + 1e-9)
+                # and the prefix is the Webster divisor allocation: rounding p/d for one common divisor d
+                lo = max(((got[m] - 0.5) / n_m[m] for m in range(len(MAKES)) if n_m[m] and got[m]), default=0)
+                hi = min(((got[m] + 0.5) / n_m[m] for m in range(len(MAKES)) if n_m[m]), default=np.inf)
+                assert lo <= hi + 1e-12
             # inside a make the order follows the score
             for m in range(len(MAKES)):
                 d = order[mk[order] == m]
@@ -148,6 +155,21 @@ def test_quota_order_is_proportional_and_consistent(tmp_path):
             # sort_keys gives the same order as top()
             k1, k2 = r.sort_keys(np.arange(rows.start, rows.stop), data.first_day + i)
             assert np.array_equal(data.drive[rows][np.lexsort((k2, k1))], order)
+
+
+def test_quota_can_miss_the_exact_share_by_more_than_one_place(tmp_path):
+    """Counterexample from the V4 review (20 Nov 2026): 73/9/9/9 drives and K = 7 give 4/1/1/1 (exact 5.11)."""
+    models = ["ST4000DM000"] * 73 + ["HGST HMS5C4040BLE640"] * 9 + ["TOSHIBA MG07ACA14TA"] * 9 + ["WDC WUH721816ALE6L4"] * 9
+    rng = np.random.default_rng(0)
+    pd.DataFrame({"drive_id": [f"S{i}|{m}" for i, m in enumerate(models)], "date": D0, "fail_date": None,
+                  "smart_count": np.zeros(len(models), dtype="int8"), "ml_h30": rng.random(len(models))}
+                 ).to_parquet(tmp_path / "w.parquet", index=False)
+    data = load_replay_input(tmp_path / "w.parquet", D0, D0)
+    mk = make_of_drives(data.drive_ids)
+    order, _ = QuotaRanker(data, data.scores["ml_h30"], mk, seed=0, tie_mode="drive").top(0, 7)
+    got = dict(zip(MAKES, np.bincount(mk[order], minlength=len(MAKES)).tolist()))
+    assert got == {"Seagate": 4, "HGST": 1, "Toshiba": 1, "WDC": 1, "Other": 0}
+    assert abs(4 - 7 * 0.73) > 1
 
 
 def test_quota_with_one_make_equals_the_plain_ranking(tmp_path):
@@ -266,6 +288,34 @@ def test_post_hoc_replay_reproduces_the_frozen_run(world, monkeypatch):
     ev = pd.read_parquet(res / "event_capture.parquet")
     r2 = fb.reproduction(cells, ev, con, zipfile.ZipFile(bad))
     assert not r2["passed"] and any("coverage" in p for p in r2["problems"])
+
+
+def test_side_files_with_swapped_drives_are_refused(world, tmp_path):
+    """Two drives of one day with the same five-indicator count swapped in the side file: day and smart_count
+    still align, so only the drive_id check (added 20 Nov 2026) can stop it."""
+    tmp, df, rep, feat = world
+    out = tmp_path / "w"
+    fb.cmd_build(Args(replay=str(rep), features=str(feat), split="valid", out=str(out), memory_limit="1GB"),
+                 only=[f"2024-{m:02d}" for m in range(1, 13)])
+    side = out / "extras_valid"
+    data, c3 = fb.load_inputs(rep, side, D0, date(2024, 12, 31), None)      # untouched side files load
+    assert len(c3) == len(data.day)
+    p = side / "part_2024-03.parquet"
+    t = pd.read_parquet(p)
+    swapped = False
+    for _, g in t.groupby(["date", "smart_count"]):
+        diff = g[g.smart_count3 != g.smart_count3.iloc[0]]
+        if len(diff):
+            perm = np.arange(len(t))
+            i, j = t.index.get_loc(g.index[0]), t.index.get_loc(diff.index[0])
+            perm[i], perm[j] = j, i
+            swapped = True
+            break
+    assert swapped
+    t = t.iloc[perm].reset_index(drop=True)
+    t.to_parquet(p, index=False)
+    with pytest.raises(SystemExit, match="drive_id differs"):
+        fb.load_inputs(rep, side, D0, date(2024, 12, 31), None)
 
 
 def test_test_period_is_guarded(world, monkeypatch, tmp_path):

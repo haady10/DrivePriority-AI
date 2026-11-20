@@ -70,3 +70,39 @@ wording rule recomputed from the two zips is identical to the lab PC output.
 - The 112 unplaced failures (A1.7): not run yet (optional; needs the snapshot).
 - Drive-model and calendar-week intervals for the A1 differences (A1.6 item 6, optional): not computed.
 - A matched-effort comparison: not part of A1.
+
+## Clarifications after the review of manuscript V4 (20 Nov 2026, evening)
+
+These do not change any computed value in the archives.
+
+1. **Quota allocation is approximately proportional, not "within one place".** A1.2 and the `QuotaRanker`
+   docstring said that any first K places hold each make in proportion "within one slot". That is not guaranteed.
+   The prefix of the (r + 0.5)/n order is the Webster (Sainte-Laguë) allocation of K places, and Webster can miss
+   the exact share by more than one place: 73/9/9/9 drives and K = 7 give 4/1/1/1, against an exact share of
+   5.11 for the largest make (reproduced with the repository code; test
+   `test_quota_can_miss_the_exact_share_by_more_than_one_place`). The provable bound is
+   |a − K·s| ≤ 1/2 + s·n/2 for a make with share s among n makes with drives. The code is unchanged; the docstring
+   and the old test assertion were corrected. The empirical deviation on the observed days was not computed (it
+   needs the daily drive counts by make from the replay input).
+2. **A1 re-evaluated the overlapping frozen policies.** The S1 and M1 cells with frozen ties are the frozen
+   policies E1–E8. A1 re-evaluated them in both periods only to verify that the post hoc engine reproduces the
+   frozen results (the reproduction gate). The original runs and their archives were not changed. Statements such
+   as "the test period was not rerun for the frozen policies" are therefore wrong; the correct statement is "the
+   pre-specified batch was run once; the A1 batch re-evaluated the S1 and M1 policies for verification".
+3. **Model-level intervals** (A1.6 item 6) were added on 20 Nov from the saved per-event table, with the method of
+   Table IX (`tools/phase5_post_test/a1_model_cluster_bootstrap.py`, output `A1_model_cluster_bootstrap.csv`; the
+   script first reproduces the frozen Table IX intervals exactly, `A1_model_cluster_check.json`). Under drive-model
+   resampling most A1 differences include zero, e.g. M1 − S4 (next day, fresh, rotating ties) −7.6 with a model
+   interval of −22.3 to +8.7 (test) and −3.8 with −18.1 to +12.8 (2024).
+4. **Side-file integrity.** The replay loader now also compares the drive_id of every side-file row with the
+   replay input (code change after the runs; test `test_side_files_with_swapped_drives_are_refused`). For the A1
+   runs that were made, the side files used by the replay are byte-identical (SHA-256 in `run_info.json`) to the
+   files the build step wrote after its (drive_id, date) join (`build_*_manifest.json`), in both periods.
+5. **Equal effort (A1.6 item 5)** asks for capture against distinct drives and against completed inspections at the
+   three budgets. Spearman correlations over the 56 cells of each budget (distinct / completed): test B10
+   0.96 / 0.06, B20 0.95 / 0.26, B50 0.91 / 0.60; 2024 B10 0.96 / 0.43, B20 0.91 / 0.71, B50 0.82 / 0.83.
+   Descriptive only; distinct drives are an outcome of the policy, so this does not separate breadth from ranking depth.
+6. **Wording.** "Level with S3" (team notes) is wrong for the cooldown with rotating ties: M1 − S3 is −1.1
+   [−2.5, +0.2] with fresh Top-K (not established either way) and −2.1 [−3.3, −1.0] with the queue (M1 behind).
+   Quotas raise the capture of the SMART count only under next-day re-inspection; under the cooldown S4 − S1 is
+   −1.5 and −3.1 (frozen ties) and −1.9 and −2.4 (rotating ties) points on the test period.
